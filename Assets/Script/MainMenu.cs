@@ -31,7 +31,9 @@ public class MainMenu : MonoBehaviour
 
     IEnumerator LoadRoutine(string sceneName)
     {
-        yield return fader.FadeOut();                      // затемняем
+        if (fader != null)
+            yield return fader.FadeOut();                  // затемняем, если оно настроено
+
         var op = SceneManager.LoadSceneAsync(sceneName);   // грузим в фоне
         while (!op.isDone) yield return null;
     }

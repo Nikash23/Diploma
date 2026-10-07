@@ -8,6 +8,12 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/MainMenu.unity
     guid: 1d330767461b99b42aa563defff6db82
+  - enabled: 1
+    path: Assets/Scenes/Controllerbar.unity
+    guid: ca9c291eda7bb504fbe5ad72965c390f
+  - enabled: 1
+    path: Assets/Scenes/UITeleport.unity
+    guid: bf9b7fc3132195249b2d70499a601a76
   m_configObjects:
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: c310cede7e901ab4e905f3d31d4ed385, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: e2ccea3fd1675b144a8ea75c634aae2b, type: 2}
