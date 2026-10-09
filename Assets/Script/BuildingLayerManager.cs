@@ -24,16 +24,17 @@ public class BuildingLayerManager : MonoBehaviour
     readonly Dictionary<string, LayerGroup> map = new();
     readonly Dictionary<string, Renderer[]> renderers = new();
     readonly Dictionary<string, Collider[]> colliders = new();
-
     void Awake()
     {
         foreach (var g in groups)
         {
+            g.visible = true; // ← все слои на старте включены
             map[g.id] = g;
             renderers[g.id] = g.root.GetComponentsInChildren<Renderer>(true);
             colliders[g.id] = g.root.GetComponentsInChildren<Collider>(true);
         }
     }
+
 
     void Update()
     {
