@@ -29,6 +29,7 @@ public class PlacementController : MonoBehaviour
     BoxCollider box;
     float yaw;
     bool valid;
+    bool dragMode;   // true: ставится отпусканием кнопки над полом (перетаскивание из меню)
 
     public bool IsPlacing => ghost != null;
 
@@ -38,10 +39,11 @@ public class PlacementController : MonoBehaviour
         if (rotate.reference == null && rotate.action != null) rotate.action.Enable();
     }
 
-    public void BeginPlacement(FurnitureItem item)
+    public void BeginPlacement(FurnitureItem item, bool fromDrag = false)
     {
         Cancel();
         current = item;
+        dragMode = fromDrag;
         ghost = Instantiate(item.prefab);
 
         rends = ghost.GetComponentsInChildren<Renderer>();
@@ -61,6 +63,8 @@ public class PlacementController : MonoBehaviour
         int ui = LayerMask.NameToLayer("UI");
         ray.raycastMask = floorMask | blockMask | (1 << ui);
         ray.gameObject.SetActive(true);
+
+        ghost.SetActive(false); // покажем, когда луч коснётся пола
     }
 
     void Update()
@@ -81,9 +85,16 @@ public class PlacementController : MonoBehaviour
         if (rotate.action != null) rot += rotate.action.ReadValue<Vector2>().x;
         yaw += rot * rotateSpeed * Time.deltaTime;
 
-        if (ray.TryGetCurrent3DRaycastHit(out RaycastHit hit) &&
-            (floorMask.value & (1 << hit.collider.gameObject.layer)) != 0)
+        bool overUI = ray.TryGetCurrentUIRaycastResult(out _);
+        bool hasFloor = !overUI &&
+                        ray.TryGetCurrent3DRaycastHit(out RaycastHit hit) &&
+                        (floorMask.value & (1 << hit.collider.gameObject.layer)) != 0;
+
+        if (hasFloor)
         {
+            ray.TryGetCurrent3DRaycastHit(out hit);
+            if (!ghost.activeSelf) ghost.SetActive(true);
+
             Vector3 p = hit.point;
             if (gridStep > 0f)
             {
@@ -99,11 +110,21 @@ public class PlacementController : MonoBehaviour
         else
         {
             valid = false;
-            SetColor(badMat);
+            if (ghost.activeSelf) ghost.SetActive(false);
         }
 
-        if (confirm.action != null && confirm.action.WasPressedThisFrame() && valid)
+        // в режиме перетаскивания ставим отпусканием (см. TryPlace)
+        if (!dragMode && confirm.action != null && confirm.action.WasPressedThisFrame() && valid)
             Place();
+    }
+
+    // Вызывается из меню при отпускании кнопки
+    public bool TryPlace()
+    {
+        if (ghost == null) return false;
+        if (valid) { Place(); return true; }
+        Cancel();
+        return false;
     }
 
     // нижняя точка модели ровно на уровне пола (если pivot не по низу)
@@ -120,8 +141,7 @@ public class PlacementController : MonoBehaviour
         Vector3 center = t.TransformPoint(box.center);
         Vector3 half = Vector3.Scale(box.size, t.lossyScale) * 0.5f * 0.98f;
         half = new Vector3(Mathf.Abs(half.x), Mathf.Abs(half.y), Mathf.Abs(half.z));
-        // чуть приподнимаем, чтобы пол не считался пересечением
-        center += Vector3.up * 0.005f;
+        center += Vector3.up * 0.005f; // чтобы пол не считался пересечением
         var hits = Physics.OverlapBox(center, half, t.rotation, blockMask, QueryTriggerInteraction.Ignore);
         foreach (var h in hits)
             if (!h.transform.IsChildOf(ghost.transform)) return true;

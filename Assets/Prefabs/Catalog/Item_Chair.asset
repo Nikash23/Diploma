@@ -14,6 +14,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::FurnitureItem
   id: chair
   displayName: "\u0421\u0442\u0443\u043B"
-  icon: {fileID: 0}
+  icon: {fileID: -1749682530835289257, guid: 19abe98530a6b3f4c8eb6fd92eea84f5, type: 3}
   prefab: {fileID: 2345653283206819394, guid: 81ce5d5e01092f84cb942b96536a11a9, type: 3}
   category: "\u0421\u0442\u0443\u043B\u044C\u044F"
