@@ -1,16 +1,11 @@
 using UnityEngine;
 
-public class FurnitureItem : MonoBehaviour
+[CreateAssetMenu(menuName = "Furniture/Item")]
+public class FurnitureItem : ScriptableObject
 {
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
-    {
-        
-    }
-
-    // Update is called once per frame
-    void Update()
-    {
-        
-    }
+    public string id;
+    public string displayName;
+    public Sprite icon;
+    public GameObject prefab;   // pivot по центру низа модели, на корне BoxCollider
+    public string category;
 }
