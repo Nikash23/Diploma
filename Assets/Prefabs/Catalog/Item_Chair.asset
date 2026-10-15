@@ -1,0 +1,19 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b54d5228ea0a39f44b48a60ed5bba692, type: 3}
+  m_Name: Item_Chair
+  m_EditorClassIdentifier: Assembly-CSharp::FurnitureItem
+  id: chair
+  displayName: "\u0421\u0442\u0443\u043B"
+  icon: {fileID: -1749682530835289257, guid: 19abe98530a6b3f4c8eb6fd92eea84f5, type: 3}
+  prefab: {fileID: 2345653283206819394, guid: 81ce5d5e01092f84cb942b96536a11a9, type: 3}
+  category: "\u0421\u0442\u0443\u043B\u044C\u044F"
