@@ -33,7 +33,7 @@ public class TeleportMenu : MonoBehaviour
     private void Start()
     {
         if (xrOrigin == null)
-            xrOrigin = FindFirstObjectByType<XROrigin>();
+            xrOrigin = FindAnyObjectByType<XROrigin>();
 
         foreach (var p in points)
         {
