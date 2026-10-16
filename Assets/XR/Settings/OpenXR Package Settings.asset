@@ -409,27 +409,27 @@ MonoBehaviour:
   m_Name: Standalone
   m_EditorClassIdentifier: Unity.XR.OpenXR::UnityEngine.XR.OpenXR.OpenXRSettings
   features:
-  - {fileID: 7899953407580431010}
-  - {fileID: -5401867666370268639}
-  - {fileID: 7223764621621718428}
-  - {fileID: -4972584343542928560}
-  - {fileID: 5083908062858513986}
-  - {fileID: -7055868277642151817}
   - {fileID: -7870867197317701399}
-  - {fileID: -5479561905514271230}
-  - {fileID: 2964445528469452879}
-  - {fileID: -726472657136597951}
-  - {fileID: -677137899181574923}
-  - {fileID: 281802545799253924}
-  - {fileID: 8790778664820259316}
-  - {fileID: -8249876012569946449}
+  - {fileID: 7223764621621718428}
+  - {fileID: -7055868277642151817}
   - {fileID: -5368592460588953357}
-  - {fileID: -8946360501056219906}
-  - {fileID: 4152720175927459094}
-  - {fileID: -8700256619778821748}
-  - {fileID: -4625896026679544612}
   - {fileID: -5961085957992164369}
+  - {fileID: 5083908062858513986}
+  - {fileID: 2964445528469452879}
+  - {fileID: -4625896026679544612}
+  - {fileID: -726472657136597951}
+  - {fileID: -5479561905514271230}
+  - {fileID: -8700256619778821748}
+  - {fileID: 8790778664820259316}
+  - {fileID: 281802545799253924}
   - {fileID: 8610593566800173160}
+  - {fileID: -8946360501056219906}
+  - {fileID: -5401867666370268639}
+  - {fileID: -677137899181574923}
+  - {fileID: -8249876012569946449}
+  - {fileID: 7899953407580431010}
+  - {fileID: -4972584343542928560}
+  - {fileID: 4152720175927459094}
   customLoaderName: 
   m_renderMode: 1
   m_latencyOptimization: 0
@@ -649,6 +649,7 @@ MonoBehaviour:
   - {fileID: -3175609899794824990}
   - {fileID: -3929666247014845669}
   - {fileID: -85257324470054531}
+  - {fileID: 5373374227268665320}
   customLoaderName: 
   m_renderMode: 1
   m_latencyOptimization: 0
@@ -886,6 +887,30 @@ MonoBehaviour:
   customRuntimeLoaderName: 
   enableSubsampledLayout: 0
   useEyeTracking: 1
+--- !u!114 &5373374227268665320
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 92efb7dda02dc484c90845a437c4784e, type: 3}
+  m_Name: AutomaticDynamicResolutionFeature Android
+  m_EditorClassIdentifier: Unity.XR.OpenXR::UnityEngine.XR.OpenXR.Features.AutomaticDynamicResolutionFeature
+  m_enabled: 0
+  nameUi: Automatic Viewport Dynamic Resolution
+  version: 1.0.0
+  featureIdInternal: com.unity.openxr.feature.ViewportDynamicResolution
+  openxrExtensionStrings: XR_META_recommended_layer_resolution XR_ANDROID_recommended_resolution
+  company: Unity
+  priority: 0
+  targetOpenXRApiVersion: 
+  required: 0
+  customRuntimeLoaderName: 
+  m_MinResolutionScalar: 0.05
+  m_MaxResolutionScalar: 1
 --- !u!114 &5839775381268055159
 MonoBehaviour:
   m_ObjectHideFlags: 0
