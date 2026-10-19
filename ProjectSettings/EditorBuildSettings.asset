@@ -15,5 +15,6 @@ EditorBuildSettings:
     path: Assets/Scenes/UITeleport.unity
     guid: bf9b7fc3132195249b2d70499a601a76
   m_configObjects:
+    com.unity.xr.arfoundation.simulation_settings: {fileID: 11400000, guid: 34b80d5669dd4374085ce21b2ef03f3f, type: 2}
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: c310cede7e901ab4e905f3d31d4ed385, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: e2ccea3fd1675b144a8ea75c634aae2b, type: 2}
