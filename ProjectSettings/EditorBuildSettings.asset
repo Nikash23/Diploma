@@ -6,6 +6,9 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/Scenes/MR_Test.unity
+    guid: 304a634ed4eea284cacd2f0a92c018c8
+  - enabled: 0
     path: Assets/Scenes/Cross-section.unity
     guid: f69c7bdc298a32949a91ebfa90bba63d
   m_configObjects:
