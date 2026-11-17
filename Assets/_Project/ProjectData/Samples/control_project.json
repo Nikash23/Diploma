@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "id": "project_demo0001",
+  "name": "Контрольный проект: тестовая комната",
+  "units": "meters",
+  "createdAt": "2026-11-16T10:00:00Z",
+  "updatedAt": "2026-11-16T10:30:00Z",
+  "source": "template",
+  "buildingId": "building_main",
+  "reference": {
+    "origin": { "x": 0, "y": 0, "z": 0 },
+    "forward": { "x": 0, "y": 0, "z": 1 },
+    "scale": 1
+  },
+  "rooms": [
+    {
+      "id": "room_1",
+      "name": "Тестовая комната",
+      "floor": 1,
+      "elevation": 0,
+      "boundary": [
+        { "x": 0, "z": 0 },
+        { "x": 4, "z": 0 },
+        { "x": 4, "z": 3 },
+        { "x": 0, "z": 3 }
+      ],
+      "height": 2.7,
+      "template": "rectangular",
+      "templateParams": { "width": 4, "depth": 3 },
+      "state": "existing"
+    }
+  ],
+  "walls": [
+    { "id": "wall_s", "roomId": "room_1", "a": { "x": 0, "z": 0 }, "b": { "x": 4, "z": 0 }, "height": 2.7, "thickness": 0.2, "openingIds": [ "opening_door_1" ], "state": "existing" },
+    { "id": "wall_e", "roomId": "room_1", "a": { "x": 4, "z": 0 }, "b": { "x": 4, "z": 3 }, "height": 2.7, "thickness": 0.2, "openingIds": [], "state": "existing" },
+    { "id": "wall_n", "roomId": "room_1", "a": { "x": 4, "z": 3 }, "b": { "x": 0, "z": 3 }, "height": 2.7, "thickness": 0.2, "openingIds": [ "opening_window_1" ], "state": "existing" },
+    { "id": "wall_w", "roomId": "room_1", "a": { "x": 0, "z": 3 }, "b": { "x": 0, "z": 0 }, "height": 2.7, "thickness": 0.2, "openingIds": [], "state": "existing" },
+    { "id": "wall_p1", "roomId": "room_1", "a": { "x": 2, "z": 3 }, "b": { "x": 2, "z": 1.8 }, "height": 2.7, "thickness": 0.1, "openingIds": [], "state": "proposed" }
+  ],
+  "openings": [
+    { "id": "opening_door_1", "wallId": "wall_s", "type": "door", "offset": 0.5, "width": 0.9, "height": 2.1, "sillHeight": 0, "materialId": "mat_wood_door_01", "state": "existing" },
+    { "id": "opening_window_1", "wallId": "wall_n", "type": "window", "offset": 1.4, "width": 1.2, "height": 1.2, "sillHeight": 0.9, "materialId": "mat_glass_01", "state": "existing" }
+  ],
+  "objects": [
+    { "id": "obj_sofa_1", "catalogId": "sofa_3seat_01", "position": { "x": 3, "y": 0, "z": 0.5 }, "rotation": { "x": 0, "y": 0, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 }, "layer": "furniture", "state": "proposed" },
+    { "id": "obj_table_1", "catalogId": "table_coffee_01", "position": { "x": 3, "y": 0, "z": 1.8 }, "rotation": { "x": 0, "y": 90, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 }, "layer": "furniture", "state": "proposed", "groupId": "group_1" },
+    { "id": "obj_chair_1", "catalogId": "chair_office_01", "position": { "x": 1, "y": 0, "z": 2.2 }, "rotation": { "x": 0, "y": 195, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 }, "layer": "furniture", "state": "proposed", "groupId": "group_1" }
+  ],
+  "lights": [
+    { "id": "light_1", "kind": "point", "position": { "x": 2, "y": 2.6, "z": 1.5 }, "intensity": 1, "enabled": true, "layer": "lighting", "state": "proposed" }
+  ],
+  "materialOverrides": [
+    { "targetId": "room_1", "slot": "floor", "materialId": "mat_wood_oak_01" },
+    { "targetId": "wall_n", "slot": "surface", "materialId": "mat_paint_white_01" }
+  ],
+  "variants": [
+    {
+      "id": "variant_a",
+      "name": "Базовый",
+      "objectStates": [
+        { "objectId": "obj_sofa_1", "present": true, "position": { "x": 3, "y": 0, "z": 0.5 }, "rotation": { "x": 0, "y": 0, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 } },
+        { "objectId": "obj_table_1", "present": true, "position": { "x": 3, "y": 0, "z": 1.8 }, "rotation": { "x": 0, "y": 90, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 } },
+        { "objectId": "obj_chair_1", "present": true, "position": { "x": 1, "y": 0, "z": 2.2 }, "rotation": { "x": 0, "y": 195, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 } }
+      ]
+    },
+    {
+      "id": "variant_b",
+      "name": "Без стола, кресло у окна",
+      "objectStates": [
+        { "objectId": "obj_sofa_1", "present": true, "position": { "x": 3, "y": 0, "z": 0.5 }, "rotation": { "x": 0, "y": 0, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 } },
+        { "objectId": "obj_table_1", "present": false, "position": { "x": 3, "y": 0, "z": 1.8 }, "rotation": { "x": 0, "y": 90, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 } },
+        { "objectId": "obj_chair_1", "present": true, "position": { "x": 2.5, "y": 0, "z": 2.5 }, "rotation": { "x": 0, "y": 180, "z": 0 }, "scale": { "x": 1, "y": 1, "z": 1 } }
+      ]
+    }
+  ],
+  "activeVariantId": "variant_a",
+  "alignments": [
+    { "platform": "quest", "anchorId": "a1b2c3d4-0000-0000-0000-000000000001", "offset": { "x": 0.02, "y": 0, "z": -0.01 }, "rotationY": 1.5, "quality": 87 }
+  ],
+  "spaceSnapshots": [
+    {
+      "id": "snapshot_1",
+      "capturedAt": "2026-11-16T10:20:00Z",
+      "planes": [
+        { "id": "snap_plane_floor", "kind": "floor", "center": { "x": 2, "y": 0, "z": 1.5 }, "rotationY": 0, "size": { "width": 4, "height": 3 } },
+        { "id": "snap_plane_wall_1", "kind": "wall", "center": { "x": 2, "y": 1.35, "z": 0 }, "rotationY": 0, "size": { "width": 4, "height": 2.7 } }
+      ],
+      "volumes": [
+        { "id": "snap_vol_1", "label": "table", "center": { "x": 1, "y": 0.4, "z": 1 }, "rotationY": 0, "size": { "x": 1.2, "y": 0.8, "z": 0.7 } }
+      ],
+      "floorHeight": 0,
+      "quality": 90
+    }
+  ],
+  "comparisonResults": [
+    { "elementId": "wall_s", "status": "matched", "deviationDistance": 0.03, "deviationAngle": 1.2, "comparedAt": "2026-11-16T10:25:00Z" },
+    { "elementId": "wall_p1", "status": "notBuilt", "deviationDistance": 0, "deviationAngle": 0, "comparedAt": "2026-11-16T10:25:00Z" },
+    { "elementId": "snap_vol_1", "status": "extra", "deviationDistance": 0, "deviationAngle": 0, "comparedAt": "2026-11-16T10:25:00Z" }
+  ]
+}
