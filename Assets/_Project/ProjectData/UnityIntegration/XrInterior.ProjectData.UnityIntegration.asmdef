@@ -1,0 +1,16 @@
+{
+  "name": "XrInterior.ProjectData.UnityIntegration",
+  "rootNamespace": "XrInterior.ProjectData.UnityIntegration",
+  "references": [
+    "XrInterior.ProjectData"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
