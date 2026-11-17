@@ -1999,6 +1999,10 @@ PrefabInstance:
       propertyPath: m_Name
       value: XR Interaction Simulator
       objectReference: {fileID: 0}
+    - target: {fileID: 3827050472887514947, guid: ca9cb96978fe7574aa46897bf3ccc1f2, type: 3}
+      propertyPath: m_IsActive
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 6951752475998917675, guid: ca9cb96978fe7574aa46897bf3ccc1f2, type: 3}
       propertyPath: m_LocalPosition.x
       value: -14.724629
