@@ -276,7 +276,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: XrInterior.ProjectData.UnityIntegration::XrInterior.ProjectData.UnityIntegration.ProjectPreview
   source: 0
-  template: 1
+  template: 3
   width: 4
   depth: 3
   length: 8

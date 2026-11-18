@@ -12,6 +12,7 @@ namespace XrInterior.ProjectData.UnityIntegration
     public class ProjectPreview : MonoBehaviour
     {
         public enum PreviewSource { NewTemplateRoom, ControlProject }
+        private enum DemoSpot { Random, NearSouthWall, NearNorthWall, NearEastWall, Center }
 
         [Header("Что показать")]
         public PreviewSource source = PreviewSource.NewTemplateRoom;
@@ -28,11 +29,13 @@ namespace XrInterior.ProjectData.UnityIntegration
         private ProjectStorage _storage;
         private ProjectService _projects;
         private CommandService _commands;
+        private CatalogService _catalog;
         private GameObject _viewRoot;
         private bool _framed;
         private string _status = "";
         private GUIStyle _label;
         private GUIStyle _button;
+        private GUIStyle _statusLabel;
         private Vector2 _scroll;
 
         private void Start()
@@ -55,6 +58,17 @@ namespace XrInterior.ProjectData.UnityIntegration
 
         private void BuildProject()
         {
+            try
+            {
+                _catalog = CatalogService.FromFile(
+                    Path.Combine(Application.dataPath, "_Project/ProjectData/Samples/catalog_sample.json"));
+            }
+            catch (Exception ex)
+            {
+                _catalog = null;
+                Debug.LogWarning("Каталог не загружен: " + ex.Message);
+            }
+
             _storageDir = Path.Combine(Path.GetTempPath(), "xri_preview_" + Guid.NewGuid().ToString("N"));
             _storage = new ProjectStorage(_storageDir);
             _projects = new ProjectService(_storage);
@@ -192,10 +206,24 @@ namespace XrInterior.ProjectData.UnityIntegration
         private void DrawObject(PlacedObject o)
         {
             Quaternion rot = Quaternion.Euler(o.Rotation.X, o.Rotation.Y, o.Rotation.Z);
-            Vector3 pos = new Vector3(o.Position.X, o.Position.Y, o.Position.Z) + rot * (Vector3.up * 0.4f);
+            Vector3 size = new Vector3(0.8f, 0.8f, 0.8f);
+            Vector3 localCenter = new Vector3(0f, 0.4f, 0f);
+            string label = o.CatalogId;
+
+            CatalogItem item = _catalog != null ? _catalog.GetItem(o.CatalogId) : null;
+            if (item != null)
+            {
+                size = new Vector3(item.Size.X, item.Size.Y, item.Size.Z);
+                // Точка привязки: пол - центр основания; стена - центр задней стороны; потолок - центр верха.
+                if (item.Placement == PlacementRule.Wall) localCenter = new Vector3(0f, 0f, item.Size.Z / 2f);
+                else if (item.Placement == PlacementRule.Ceiling) localCenter = new Vector3(0f, -item.Size.Y / 2f, 0f);
+                else localCenter = new Vector3(0f, item.Size.Y / 2f, 0f);
+                label = item.Name;
+            }
+
+            Vector3 pos = new Vector3(o.Position.X, o.Position.Y, o.Position.Z) + rot * localCenter;
             float hue = Mathf.Abs((o.CatalogId ?? "").GetHashCode() % 100) / 100f;
-            Box("Объект " + o.CatalogId + " (" + o.Id + ")", pos, new Vector3(0.8f, 0.8f, 0.8f), rot,
-                Color.HSVToRGB(hue, 0.55f, 0.9f));
+            Box("Объект " + label + " (" + o.Id + ")", pos, size, rot, Color.HSVToRGB(hue, 0.55f, 0.9f));
         }
 
         private void DrawLight(ProjectLight l)
@@ -344,7 +372,10 @@ namespace XrInterior.ProjectData.UnityIntegration
         private void OnGUI()
         {
             EnsureStyles();
-            GUILayout.BeginArea(new Rect(12f, 12f, 480f, Screen.height - 24f), GUI.skin.box);
+            // Панель подстраивается под размер окна Game.
+            float scale = Mathf.Clamp(Screen.height / 720f, 0.8f, 1.6f);
+            GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
+            GUILayout.BeginArea(new Rect(8f, 8f, 400f, Screen.height / scale - 16f), GUI.skin.box);
 
             if (_projects == null || _projects.Current == null)
             {
@@ -353,12 +384,13 @@ namespace XrInterior.ProjectData.UnityIntegration
                 return;
             }
 
-            _scroll = GUILayout.BeginScrollView(_scroll);
             Project p = _projects.Current;
             GUILayout.Label("Проект: " + p.Name + " (источник: " + p.Source + ")", _label);
             GUILayout.Label("Помещений: " + p.Rooms.Count + "   Стен: " + p.Walls.Count + "   Объектов: " + p.Objects.Count, _label);
             GUILayout.Label("Команд в истории: " + _commands.UndoCount, _label);
-            GUILayout.Space(8f);
+            GUILayout.Label("▶ " + _status, _statusLabel);   // статус всегда виден над кнопками
+            GUILayout.Space(6f);
+            _scroll = GUILayout.BeginScrollView(_scroll);
 
             if (GUILayout.Button("Добавить стул", _button)) Run(AddChair);
 
@@ -376,6 +408,17 @@ namespace XrInterior.ProjectData.UnityIntegration
             if (GUILayout.Button("Удалить последнюю стену", _button)) Run(RemoveLastWall);
             GUI.enabled = true;
 
+            GUILayout.Space(6f);
+            GUILayout.Label("Из каталога (с правилами размещения):", _label);
+            GUI.enabled = _catalog != null;
+            if (GUILayout.Button("Стул на пол", _button)) Run(() => PlaceDemo("chair_wood_01", DemoSpot.Random));
+            if (GUILayout.Button("Шкаф (прилипает к южной стене)", _button)) Run(() => PlaceDemo("wardrobe_01", DemoSpot.NearSouthWall));
+            if (GUILayout.Button("Диван (прилипает к северной стене)", _button)) Run(() => PlaceDemo("sofa_3seat_01", DemoSpot.NearNorthWall));
+            if (GUILayout.Button("Картина на восточную стену", _button)) Run(() => PlaceDemo("picture_wall_01", DemoSpot.NearEastWall));
+            if (GUILayout.Button("Потолочный светильник", _button)) Run(() => PlaceDemo("lamp_ceiling_01", DemoSpot.Center));
+            if (GUILayout.Button("Картина в центр (не получится: нет стены)", _button)) Run(() => PlaceDemo("picture_wall_01", DemoSpot.Center));
+            GUI.enabled = true;
+
             GUILayout.Space(8f);
 
             GUI.enabled = _commands.CanUndo;
@@ -388,7 +431,6 @@ namespace XrInterior.ProjectData.UnityIntegration
             if (GUILayout.Button("Сохранить и открыть заново", _button)) Run(ReopenFromDisk);
 
             GUILayout.Space(8f);
-            GUILayout.Label(_status, _label);
             GUILayout.EndScrollView();
             GUILayout.EndArea();
         }
@@ -396,9 +438,11 @@ namespace XrInterior.ProjectData.UnityIntegration
         private void EnsureStyles()
         {
             if (_label != null) return;
-            _label = new GUIStyle(GUI.skin.label) { fontSize = 16, wordWrap = true };
+            _label = new GUIStyle(GUI.skin.label) { fontSize = 14, wordWrap = true };
             _label.normal.textColor = Color.white;
-            _button = new GUIStyle(GUI.skin.button) { fontSize = 16, fixedHeight = 32f };
+            _statusLabel = new GUIStyle(_label) { fontStyle = FontStyle.Bold };
+            _statusLabel.normal.textColor = new Color(1f, 0.9f, 0.3f);
+            _button = new GUIStyle(GUI.skin.button) { fontSize = 14, fixedHeight = 28f };
         }
 
         private void Run(Action action)
@@ -451,6 +495,40 @@ namespace XrInterior.ProjectData.UnityIntegration
             Project p = _projects.Current;
             _commands.Execute(new RemoveObjectCommand(p.Objects[p.Objects.Count - 1].Id, "Удалить объект"));
             _status = "Объект удалён.";
+        }
+
+        private void PlaceDemo(string catalogId, DemoSpot spot)
+        {
+            CatalogItem item = _catalog.GetItem(catalogId);
+            if (item == null) { _status = "В каталоге нет предмета " + catalogId + "."; return; }
+
+            Project p = _projects.Current;
+            float minX, maxX, minZ, maxZ;
+            GetBounds(p, out minX, out maxX, out minZ, out maxZ);
+            int floor = p.Rooms.Count > 0 ? p.Rooms[0].Floor : 1;
+
+            float rx = UnityEngine.Random.Range(minX + 1f, Mathf.Max(minX + 1f, maxX - 1f));
+            float rz = UnityEngine.Random.Range(minZ + 0.5f, Mathf.Max(minZ + 0.5f, maxZ - 0.5f));
+            PlanPoint target;
+            switch (spot)
+            {
+                case DemoSpot.NearSouthWall: target = new PlanPoint(rx, minZ + 0.6f); break;
+                case DemoSpot.NearNorthWall: target = new PlanPoint(rx, maxZ - 0.6f); break;
+                case DemoSpot.NearEastWall: target = new PlanPoint(maxX - 0.4f, rz); break;
+                case DemoSpot.Center: target = new PlanPoint((minX + maxX) / 2f, (minZ + maxZ) / 2f); break;
+                default: target = new PlanPoint(rx, rz); break;
+            }
+
+            float yaw = UnityEngine.Random.Range(0, 24) * 15f;
+            PlacementResult r = PlacementService.Place(p, item, target, yaw, floor);
+            if (!r.IsValid)
+            {
+                _status = "Не удалось поставить «" + item.Name + "»: " + r.Reason;
+                return;
+            }
+
+            _commands.Execute(new AddObjectCommand(PlacementService.CreateObject(item, r), "Поставить: " + item.Name));
+            _status = "Поставлено: " + item.Name + (r.WallId != null ? " (у стены)." : ".");
         }
 
         private void GetBounds(Project p, out float minX, out float maxX, out float minZ, out float maxZ)
