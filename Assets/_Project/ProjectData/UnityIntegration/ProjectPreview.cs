@@ -12,7 +12,7 @@ namespace XrInterior.ProjectData.UnityIntegration
     public class ProjectPreview : MonoBehaviour
     {
         public enum PreviewSource { NewTemplateRoom, ControlProject }
-        private enum DemoSpot { Random, NearSouthWall, NearNorthWall, NearEastWall, Center }
+        private enum DemoSpot { Random, NearSouthWall, NearNorthWall, NearEastWall, Center, OnFakeTable }
 
         [Header("Что показать")]
         public PreviewSource source = PreviewSource.NewTemplateRoom;
@@ -30,6 +30,8 @@ namespace XrInterior.ProjectData.UnityIntegration
         private ProjectService _projects;
         private CommandService _commands;
         private CatalogService _catalog;
+        private bool _fakeReality;
+        private readonly FakeReality _reality = new FakeReality();
         private GameObject _viewRoot;
         private bool _framed;
         private string _status = "";
@@ -37,6 +39,26 @@ namespace XrInterior.ProjectData.UnityIntegration
         private GUIStyle _button;
         private GUIStyle _statusLabel;
         private Vector2 _scroll;
+
+        // Имитация результата сканирования: один "реальный стол". Настоящую проверку даст сервис A.
+        private sealed class FakeReality : IRealityCollisionChecker
+        {
+            public static readonly Vector3 Center = new Vector3(2.5f, 0.4f, 1.5f);
+            public static readonly Vector3 Size = new Vector3(1.2f, 0.8f, 0.7f);
+
+            public bool IsBlocked(float centerX, float centerY, float centerZ,
+                float sizeX, float sizeY, float sizeZ, float yawDegrees, out string reason)
+            {
+                float yaw = yawDegrees * Mathf.Deg2Rad;
+                float hx = Mathf.Abs(Mathf.Cos(yaw)) * sizeX / 2f + Mathf.Abs(Mathf.Sin(yaw)) * sizeZ / 2f;
+                float hz = Mathf.Abs(Mathf.Sin(yaw)) * sizeX / 2f + Mathf.Abs(Mathf.Cos(yaw)) * sizeZ / 2f;
+                bool overlap = Mathf.Abs(centerX - Center.x) < hx + Size.x / 2f
+                               && Mathf.Abs(centerZ - Center.z) < hz + Size.z / 2f
+                               && Mathf.Abs(centerY - Center.y) < sizeY / 2f + Size.y / 2f;
+                reason = overlap ? "Пересекается с реальным столом (имитация сканирования)." : null;
+                return overlap;
+            }
+        }
 
         private void Start()
         {
@@ -159,6 +181,9 @@ namespace XrInterior.ProjectData.UnityIntegration
             foreach (Opening o in p.Openings) DrawOpening(o, walls, rooms);
             foreach (PlacedObject o in p.Objects) DrawObject(o);
             foreach (ProjectLight l in p.Lights) DrawLight(l);
+            if (_fakeReality)
+                Box("Реальный стол (имитация)", FakeReality.Center, FakeReality.Size, Quaternion.identity,
+                    new Color(0.5f, 0.5f, 0.55f));
 
             if (!_framed && p.Rooms.Count > 0) FrameCamera(minX, maxX, minZ, maxZ);
         }
@@ -223,7 +248,17 @@ namespace XrInterior.ProjectData.UnityIntegration
 
             Vector3 pos = new Vector3(o.Position.X, o.Position.Y, o.Position.Z) + rot * localCenter;
             float hue = Mathf.Abs((o.CatalogId ?? "").GetHashCode() % 100) / 100f;
-            Box("Объект " + label + " (" + o.Id + ")", pos, size, rot, Color.HSVToRGB(hue, 0.55f, 0.9f));
+
+            // Предметы, которые пересекаются со стеной, другим предметом или реальным объектом, красные.
+            bool collides = false;
+            if (_catalog != null && _projects.Current != null)
+            {
+                Project proj = _projects.Current;
+                collides = CollisionService.CheckObject(proj, o, _catalog,
+                    _fakeReality ? _reality : null, FloorOf(proj)).HasCollisions;
+            }
+            Color color = collides ? new Color(0.95f, 0.2f, 0.2f) : Color.HSVToRGB(hue, 0.55f, 0.9f);
+            Box("Объект " + label + (collides ? " [пересечение]" : "") + " (" + o.Id + ")", pos, size, rot, color);
         }
 
         private void DrawLight(ProjectLight l)
@@ -417,6 +452,14 @@ namespace XrInterior.ProjectData.UnityIntegration
             if (GUILayout.Button("Картина на восточную стену", _button)) Run(() => PlaceDemo("picture_wall_01", DemoSpot.NearEastWall));
             if (GUILayout.Button("Потолочный светильник", _button)) Run(() => PlaceDemo("lamp_ceiling_01", DemoSpot.Center));
             if (GUILayout.Button("Картина в центр (не получится: нет стены)", _button)) Run(() => PlaceDemo("picture_wall_01", DemoSpot.Center));
+            if (GUILayout.Button("Стул в центр (нажми дважды: будет пересечение)", _button)) Run(() => PlaceDemo("chair_wood_01", DemoSpot.Center));
+
+            GUILayout.Space(6f);
+            GUILayout.Label("Реальная геометрия (имитация скана):", _label);
+            if (GUILayout.Button(_fakeReality ? "Убрать «реальный стол»" : "Показать «реальный стол»", _button))
+                Run(() => { _fakeReality = !_fakeReality; Rebuild(); });
+            if (GUILayout.Button("Стул прямо на «реальный стол» (будет блокировка)", _button))
+                Run(() => PlaceDemo("chair_wood_01", DemoSpot.OnFakeTable));
             GUI.enabled = true;
 
             GUILayout.Space(8f);
@@ -516,19 +559,34 @@ namespace XrInterior.ProjectData.UnityIntegration
                 case DemoSpot.NearNorthWall: target = new PlanPoint(rx, maxZ - 0.6f); break;
                 case DemoSpot.NearEastWall: target = new PlanPoint(maxX - 0.4f, rz); break;
                 case DemoSpot.Center: target = new PlanPoint((minX + maxX) / 2f, (minZ + maxZ) / 2f); break;
+                case DemoSpot.OnFakeTable: target = new PlanPoint(FakeReality.Center.x, FakeReality.Center.z); break;
                 default: target = new PlanPoint(rx, rz); break;
             }
 
             float yaw = UnityEngine.Random.Range(0, 24) * 15f;
-            PlacementResult r = PlacementService.Place(p, item, target, yaw, floor);
+            // Привязка к сетке 0,05 м и повороту 15°
+            PlacementResult r = PlacementService.Place(p, item, target, yaw, floor, SnapSettings.Default);
             if (!r.IsValid)
             {
                 _status = "Не удалось поставить «" + item.Name + "»: " + r.Reason;
                 return;
             }
 
+            CollisionReport report = CollisionService.Check(p, item, r, _catalog, _fakeReality ? _reality : null, floor);
+            if (report.HasBlocking)
+            {
+                _status = "Заблокировано: «" + item.Name + "». " + report.BlockingSummary;
+                return;
+            }
+
             _commands.Execute(new AddObjectCommand(PlacementService.CreateObject(item, r), "Поставить: " + item.Name));
             _status = "Поставлено: " + item.Name + (r.WallId != null ? " (у стены)." : ".");
+            if (report.HasCollisions) _status += " Предупреждение: " + report.Summary;
+        }
+
+        private static int FloorOf(Project p)
+        {
+            return p.Rooms.Count > 0 ? p.Rooms[0].Floor : 1;
         }
 
         private void GetBounds(Project p, out float minX, out float maxX, out float minZ, out float maxZ)

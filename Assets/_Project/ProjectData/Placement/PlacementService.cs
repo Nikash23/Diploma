@@ -4,7 +4,7 @@
 // PlacementService.CreateObject и AddObjectCommand.
 //
 // Проверяются: помещение, высота, углы предмета (не в стене и не за пределами комнаты), прилипание к стене,
-// проёмы. Полные пересечения и привязка к сетке 0,05 м / повороту 15° - задача B-09.
+// проёмы. Пересечения с предметами и стенами «насквозь» проверяет CollisionService (B-09).
 
 using System;
 using System.Collections.Generic;
@@ -41,11 +41,19 @@ namespace XrInterior.ProjectData
         /// <param name="target">Точка в плане, на которую указал пользователь.</param>
         /// <param name="userYaw">Поворот, выбранный пользователем (для предметов, которые не прижимаются к стене).</param>
         /// <param name="floor">Номер этажа.</param>
+        /// <param name="snap">Привязка к сетке (FR-104). null - без привязки.</param>
         public static PlacementResult Place(Project project, CatalogItem item, PlanPoint target,
-            float userYaw = 0f, int floor = 1)
+            float userYaw = 0f, int floor = 1, SnapSettings snap = null)
         {
             if (project == null) throw new ArgumentNullException(nameof(project));
             if (item == null) throw new ArgumentNullException(nameof(item));
+
+            if (snap != null)
+            {
+                target = new PlanPoint(GridSnap.Snap(target.X, snap.PositionStep),
+                                       GridSnap.Snap(target.Z, snap.PositionStep));
+                userYaw = GridSnap.SnapYaw(userYaw, snap.RotationStepDegrees);
+            }
 
             switch (item.Placement)
             {
@@ -273,13 +281,13 @@ namespace XrInterior.ProjectData
             return false;
         }
 
-        private static Room RoomOf(Project project, Wall wall)
+        internal static Room RoomOf(Project project, Wall wall)
         {
             if (wall.RoomId == null) return null;
             return project.Rooms.Find(r => r.Id == wall.RoomId);
         }
 
-        private static List<Wall> WallsOnFloor(Project project, int floor)
+        internal static List<Wall> WallsOnFloor(Project project, int floor)
         {
             var floorRooms = new HashSet<string>();
             foreach (Room r in project.Rooms)
