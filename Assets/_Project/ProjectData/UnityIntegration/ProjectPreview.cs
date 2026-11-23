@@ -25,6 +25,37 @@ namespace XrInterior.ProjectData.UnityIntegration
         public float cutWidth = 2.5f;
         public float cutDepth = 2f;
 
+        // Условные цвета материалов: настоящие текстуры сделает C, здесь важно лишь видеть, что материал сменился.
+        private static readonly Dictionary<string, Color> MaterialColors = new Dictionary<string, Color>
+        {
+            { "mat_wood_oak_01", new Color(0.78f, 0.58f, 0.32f) },
+            { "mat_wood_walnut_01", new Color(0.36f, 0.22f, 0.12f) },
+            { "mat_laminate_grey_01", new Color(0.62f, 0.62f, 0.60f) },
+            { "mat_tile_white_01", new Color(0.93f, 0.95f, 0.96f) },
+            { "mat_tile_dark_01", new Color(0.18f, 0.20f, 0.24f) },
+            { "mat_carpet_grey_01", new Color(0.45f, 0.45f, 0.50f) },
+            { "mat_concrete_01", new Color(0.55f, 0.56f, 0.57f) },
+            { "mat_paint_white_01", new Color(0.97f, 0.97f, 0.95f) },
+            { "mat_paint_beige_01", new Color(0.90f, 0.82f, 0.66f) },
+            { "mat_paint_grey_01", new Color(0.66f, 0.68f, 0.70f) },
+            { "mat_paint_blue_01", new Color(0.30f, 0.52f, 0.85f) },
+            { "mat_brick_01", new Color(0.70f, 0.30f, 0.22f) },
+            { "mat_plaster_01", new Color(0.88f, 0.86f, 0.82f) },
+            { "mat_ceiling_white_01", new Color(1f, 1f, 1f) },
+            { "mat_fabric_grey_01", new Color(0.55f, 0.58f, 0.62f) },
+            { "mat_leather_black_01", new Color(0.10f, 0.09f, 0.09f) },
+            { "mat_metal_01", new Color(0.75f, 0.77f, 0.80f) },
+            { "mat_glass_01", new Color(0.65f, 0.85f, 0.95f) },
+            { "mat_wood_door_01", new Color(0.50f, 0.34f, 0.18f) }
+        };
+
+        private static Color MaterialColor(string materialId)
+        {
+            Color c;
+            if (materialId != null && MaterialColors.TryGetValue(materialId, out c)) return c;
+            return Color.magenta;   // материал, которого нет в таблице цветов
+        }
+
         private string _storageDir;
         private ProjectStorage _storage;
         private ProjectService _projects;
@@ -206,6 +237,8 @@ namespace XrInterior.ProjectData.UnityIntegration
             float yaw = Mathf.Atan2(-d.z, d.x) * Mathf.Rad2Deg;
             Vector3 center = (a + b) / 2f + Vector3.up * (baseY + w.Height / 2f);
             Color color = w.State == ElementState.Existing ? new Color(0.85f, 0.80f, 0.70f) : new Color(0.55f, 0.85f, 0.55f);
+            string wallMaterial = MaterialRules.GetMaterialId(_projects.Current, w.Id, MaterialSlots.Surface);
+            if (wallMaterial != null) color = MaterialColor(wallMaterial);
             Box("Стена " + w.Id, center, new Vector3(len + w.Thickness, w.Height, w.Thickness), Quaternion.Euler(0f, yaw, 0f), color);
         }
 
@@ -257,7 +290,10 @@ namespace XrInterior.ProjectData.UnityIntegration
                 collides = CollisionService.CheckObject(proj, o, _catalog,
                     _fakeReality ? _reality : null, FloorOf(proj)).HasCollisions;
             }
-            Color color = collides ? new Color(0.95f, 0.2f, 0.2f) : Color.HSVToRGB(hue, 0.55f, 0.9f);
+            Color baseColor = Color.HSVToRGB(hue, 0.55f, 0.9f);
+            string objectMaterial = MaterialRules.GetMaterialId(_projects.Current, o.Id, MaterialSlots.Surface);
+            if (objectMaterial != null) baseColor = MaterialColor(objectMaterial);
+            Color color = collides ? new Color(0.95f, 0.2f, 0.2f) : baseColor;
             Box("Объект " + label + (collides ? " [пересечение]" : "") + " (" + o.Id + ")", pos, size, rot, color);
         }
 
@@ -315,7 +351,9 @@ namespace XrInterior.ProjectData.UnityIntegration
             go.transform.localScale = Vector3.one;
             Destroy(go.GetComponent<Collider>());
             go.GetComponent<MeshFilter>().sharedMesh = mesh;
-            go.GetComponent<Renderer>().material.color = new Color(0.40f, 0.40f, 0.46f);
+            string floorMaterial = MaterialRules.GetMaterialId(_projects.Current, r.Id, MaterialSlots.Floor);
+            go.GetComponent<Renderer>().material.color =
+                floorMaterial != null ? MaterialColor(floorMaterial) : new Color(0.40f, 0.40f, 0.46f);
         }
 
         private GameObject Box(string objName, Vector3 center, Vector3 size, Quaternion rot, Color color)
@@ -424,6 +462,13 @@ namespace XrInterior.ProjectData.UnityIntegration
             GUILayout.Label("Помещений: " + p.Rooms.Count + "   Стен: " + p.Walls.Count + "   Объектов: " + p.Objects.Count, _label);
             GUILayout.Label("Команд в истории: " + _commands.UndoCount, _label);
             GUILayout.Label("▶ " + _status, _statusLabel);   // статус всегда виден над кнопками
+            if (p.Rooms.Count > 0)
+            {
+                MaterialRow("Пол", p.Rooms[0].Id, MaterialSlots.Floor);
+                MaterialRow("Потолок", p.Rooms[0].Id, MaterialSlots.Ceiling);
+            }
+            if (p.Walls.Count > 0) MaterialRow("Последняя стена", p.Walls[p.Walls.Count - 1].Id, MaterialSlots.Surface);
+            if (p.Objects.Count > 0) MaterialRow("Последний предмет", p.Objects[p.Objects.Count - 1].Id, MaterialSlots.Surface);
             GUILayout.Space(6f);
             _scroll = GUILayout.BeginScrollView(_scroll);
 
@@ -464,6 +509,31 @@ namespace XrInterior.ProjectData.UnityIntegration
 
             GUILayout.Space(8f);
 
+            GUILayout.Label("Материалы (B-12):", _label);
+            GUI.enabled = _catalog != null && p.Rooms.Count > 0;
+            if (GUILayout.Button("Пол: дуб", _button))
+                Run(() => SetMaterial(p.Rooms[0].Id, MaterialSlots.Floor, "mat_wood_oak_01", "Пол: дуб."));
+            if (GUILayout.Button("Пол: тёмная плитка", _button))
+                Run(() => SetMaterial(p.Rooms[0].Id, MaterialSlots.Floor, "mat_tile_dark_01", "Пол: тёмная плитка."));
+            if (GUILayout.Button("Потолок: белый", _button))
+                Run(() => SetMaterial(p.Rooms[0].Id, MaterialSlots.Ceiling, "mat_ceiling_white_01", "Потолок: белый."));
+            if (GUILayout.Button("Все стены комнаты: синяя краска", _button))
+                Run(() => SetRoomWalls("mat_paint_blue_01", "Все стены комнаты: синяя краска."));
+            if (GUILayout.Button("Все стены комнаты: кирпич", _button))
+                Run(() => SetRoomWalls("mat_brick_01", "Все стены комнаты: кирпич."));
+            if (GUILayout.Button("Сбросить пол и стены к умолчанию", _button))
+                Run(ResetFloorAndWalls);
+            GUI.enabled = _catalog != null && p.Walls.Count > 0;
+            if (GUILayout.Button("Последняя стена: бетон", _button))
+                Run(() => SetMaterial(p.Walls[p.Walls.Count - 1].Id, MaterialSlots.Surface, "mat_concrete_01", "Последняя стена: бетон."));
+            if (GUILayout.Button("Ковёр на стену (будет отказ)", _button))
+                Run(() => SetMaterial(p.Walls[p.Walls.Count - 1].Id, MaterialSlots.Surface, "mat_carpet_grey_01", "Ковёр на стену."));
+            GUI.enabled = _catalog != null && p.Objects.Count > 0;
+            if (GUILayout.Button("Последний предмет: следующий допустимый материал", _button))
+                Run(CycleLastObjectMaterial);
+            GUI.enabled = true;
+
+            GUILayout.Space(8f);
             GUI.enabled = _commands.CanUndo;
             if (GUILayout.Button("Отменить: " + _commands.NextUndoName, _button)) Run(_commands.Undo);
             GUI.enabled = _commands.CanRedo;
@@ -651,6 +721,72 @@ namespace XrInterior.ProjectData.UnityIntegration
             Project p = _projects.Current;
             _commands.Execute(new RemoveWallCommand(p.Walls[p.Walls.Count - 1].Id, "Удалить стену"));
             _status = "Стена удалена вместе с её окнами и дверями.";
+        }
+
+        // ---------- материалы (B-12) ----------
+
+        private void MaterialRow(string title, string targetId, string slot)
+        {
+            string id = MaterialRules.GetMaterialId(_projects.Current, targetId, slot);
+            MaterialInfo info = (id != null && _catalog != null) ? _catalog.GetMaterial(id) : null;
+            string text = id == null ? "по умолчанию" : (info != null ? info.Name : id);
+
+            GUILayout.BeginHorizontal();
+            Rect swatch = GUILayoutUtility.GetRect(18f, 18f, GUILayout.Width(18f), GUILayout.Height(18f));
+            Color old = GUI.color;
+            GUI.color = id == null ? new Color(0.5f, 0.5f, 0.5f) : MaterialColor(id);
+            GUI.DrawTexture(swatch, Texture2D.whiteTexture);
+            GUI.color = old;
+            GUILayout.Label(title + ": " + text, _label);
+            GUILayout.EndHorizontal();
+        }
+
+        private void SetMaterial(string targetId, string slot, string materialId, string okText)
+        {
+            _commands.Execute(new SetMaterialCommand(targetId, slot, materialId, _catalog));
+            _status = okText;
+        }
+
+        private void SetRoomWalls(string materialId, string okText)
+        {
+            Project p = _projects.Current;
+            _commands.Execute(MaterialCommands.ApplyToRoomWalls(p, p.Rooms[0].Id, materialId, _catalog));
+            _status = okText;
+        }
+
+        private void ResetFloorAndWalls()
+        {
+            Project p = _projects.Current;
+            var commands = new List<ICommand>();
+            commands.Add(new SetMaterialCommand(p.Rooms[0].Id, MaterialSlots.Floor, null, _catalog));
+            foreach (Wall w in p.Walls)
+                if (w.RoomId == p.Rooms[0].Id)
+                    commands.Add(new SetMaterialCommand(w.Id, MaterialSlots.Surface, null, _catalog));
+            _commands.Execute(new CompositeCommand("Сбросить материалы", commands));
+            _status = "Материалы пола и стен сброшены.";
+        }
+
+        private void CycleLastObjectMaterial()
+        {
+            Project p = _projects.Current;
+            PlacedObject o = p.Objects[p.Objects.Count - 1];
+            IReadOnlyList<MaterialInfo> allowed =
+                MaterialRules.GetAllowedMaterials(p, _catalog, o.Id, MaterialSlots.Surface);
+            if (allowed.Count == 0)
+            {
+                _status = "Для этого предмета материал менять нельзя (в каталоге нет допустимых). " +
+                          "Попробуй предмет из блока «Из каталога», например стул или шкаф.";
+                return;
+            }
+
+            string current = MaterialRules.GetMaterialId(p, o.Id, MaterialSlots.Surface);
+            int index = -1;
+            for (int i = 0; i < allowed.Count; i++)
+                if (allowed[i].Id == current) index = i;
+            MaterialInfo next = allowed[(index + 1) % allowed.Count];
+
+            _commands.Execute(new SetMaterialCommand(o.Id, MaterialSlots.Surface, next.Id, _catalog));
+            _status = "Материал предмета: " + next.Name + ".";
         }
 
         private void ReopenFromDisk()
