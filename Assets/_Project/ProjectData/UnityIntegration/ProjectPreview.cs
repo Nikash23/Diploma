@@ -61,6 +61,8 @@ namespace XrInterior.ProjectData.UnityIntegration
         private ProjectService _projects;
         private CommandService _commands;
         private CatalogService _catalog;
+        private EditorTools _tools;
+        private readonly EditorSelection _selection = new EditorSelection();
         private bool _fakeReality;
         private readonly FakeReality _reality = new FakeReality();
         private GameObject _viewRoot;
@@ -155,6 +157,8 @@ namespace XrInterior.ProjectData.UnityIntegration
         private void AttachCommands()
         {
             _commands = new CommandService(_projects);
+            _selection.Clear();
+            _tools = _catalog != null ? new EditorTools(_projects, _commands, _catalog) : null;
             _projects.ProjectChanged += Rebuild;
         }
 
@@ -191,6 +195,7 @@ namespace XrInterior.ProjectData.UnityIntegration
 
             Project p = _projects.Current;
             if (p == null) return;
+            _selection.Refresh(p);
 
             var rooms = new Dictionary<string, Room>();
             foreach (Room r in p.Rooms) rooms[r.Id] = r;
@@ -295,6 +300,9 @@ namespace XrInterior.ProjectData.UnityIntegration
             if (objectMaterial != null) baseColor = MaterialColor(objectMaterial);
             Color color = collides ? new Color(0.95f, 0.2f, 0.2f) : baseColor;
             Box("Объект " + label + (collides ? " [пересечение]" : "") + " (" + o.Id + ")", pos, size, rot, color);
+            if (o.Id == _selection.SelectedId)
+                Box("Выбран", pos + Vector3.up * (size.y / 2f + 0.25f), new Vector3(0.15f, 0.15f, 0.15f),
+                    Quaternion.identity, new Color(1f, 0.9f, 0.1f));
         }
 
         private void DrawLight(ProjectLight l)
@@ -509,6 +517,24 @@ namespace XrInterior.ProjectData.UnityIntegration
 
             GUILayout.Space(8f);
 
+            GUILayout.Label("Редактирование выбранного (B-07):", _label);
+            GUI.enabled = _tools != null && p.Objects.Count > 0;
+            if (GUILayout.Button("Выбрать следующий предмет (жёлтый маркер)", _button))
+                Run(SelectNextObject);
+            GUI.enabled = _tools != null && _selection.HasSelection;
+            if (GUILayout.Button("Повернуть на 15°", _button))
+                Run(() => Report(_tools.RotateBy(_selection.SelectedId, 15f)));
+            if (GUILayout.Button("Сдвинуть на 0,25 м вправо", _button))
+                Run(() => MoveSelected(0.25f, 0f));
+            if (GUILayout.Button("Сдвинуть на 0,25 м вперёд", _button))
+                Run(() => MoveSelected(0f, 0.25f));
+            if (GUILayout.Button("Дублировать", _button))
+                Run(DuplicateSelected);
+            if (GUILayout.Button("Удалить выбранный", _button))
+                Run(() => Report(_tools.Delete(_selection.SelectedId)));
+            GUI.enabled = true;
+
+            GUILayout.Space(6f);
             GUILayout.Label("Материалы (B-12):", _label);
             GUI.enabled = _catalog != null && p.Rooms.Count > 0;
             if (GUILayout.Button("Пол: дуб", _button))
@@ -721,6 +747,40 @@ namespace XrInterior.ProjectData.UnityIntegration
             Project p = _projects.Current;
             _commands.Execute(new RemoveWallCommand(p.Walls[p.Walls.Count - 1].Id, "Удалить стену"));
             _status = "Стена удалена вместе с её окнами и дверями.";
+        }
+
+        // ---------- редактирование выбранного (B-07) ----------
+
+        private void ApplyReality() { if (_tools != null) _tools.Reality = _fakeReality ? _reality : null; }
+
+        private void Report(ToolResult r)
+        {
+            _status = r.Message + (r.Warning != null ? " Предупреждение: " + r.Warning : "");
+        }
+
+        private void SelectNextObject()
+        {
+            string id = _selection.SelectNext(_projects.Current);
+            PlacedObject o = _projects.Current.Objects.Find(x => x.Id == id);
+            CatalogItem item = (o != null && _catalog != null) ? _catalog.GetItem(o.CatalogId) : null;
+            _status = "Выбран: " + (item != null ? item.Name : (o != null ? o.CatalogId : "ничего")) + " (" + id + ").";
+            Rebuild();
+        }
+
+        private void MoveSelected(float dx, float dz)
+        {
+            ApplyReality();
+            PlacedObject o = _projects.Current.Objects.Find(x => x.Id == _selection.SelectedId);
+            if (o == null) return;
+            Report(_tools.MoveTo(o.Id, new PlanPoint(o.Position.X + dx, o.Position.Z + dz)));
+        }
+
+        private void DuplicateSelected()
+        {
+            ApplyReality();
+            ToolResult r = _tools.Duplicate(_selection.SelectedId);
+            Report(r);
+            if (r.Success) { _selection.Select(r.ObjectId); Rebuild(); }
         }
 
         // ---------- материалы (B-12) ----------
