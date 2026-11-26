@@ -214,6 +214,7 @@ namespace XrInterior.ProjectData.Tests
         {
             AddChair("o1", _cx, _cz);
             _tools.Reality = new AlwaysBlocked();
+            _tools.BlockOnReality = true;   // запрет подтверждения (FR-207); по умолчанию это только предупреждение
 
             ToolResult r = _tools.MoveTo("o1", new PlanPoint(_cx + 1f, _cz));
 

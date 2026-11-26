@@ -1,7 +1,9 @@
 // XR-надстройка над ProjectPreview (B-07, часть 2, FR-103, FR-113).
 // ProjectPreview рисует проект и выполняет все действия, он не знает про XR. Этот компонент добавляет только то,
-// что зависит от XR Interaction Toolkit: хват предмета лучом контроллера, кнопки контроллеров и клавиши 1-6
+// что зависит от XR Interaction Toolkit: хват предмета лучом контроллера, кнопки контроллеров и клавиши 1-7
 // (для проверки без гарнитуры), постановку XR-рига в комнату и подсказку перед глазами.
+// Кнопки контроллеров: A - повернуть, B - копия, клик правого стика - удалить, X - отмена, клик левого стика - повтор.
+// (Кнопка Y не используется: в Starter Assets она открывает обучение.)
 // Все изменения проекта выполняют EditorTools и команды (undo/redo): здесь правил нет.
 
 using System;
@@ -53,12 +55,16 @@ namespace XrInterior.EditorXR
             _preview.frameCamera = false;   // камерой управляет XR-риг, а не предпросмотр
             _preview.ObjectViewBuilt += OnObjectViewBuilt;
             _preview.ViewRebuilt += OnViewRebuilt;
+            _preview.ProjectReopened += OnProjectReopened;
             SetupInput();
         }
 
         private void Start()
         {
             CreateHud();
+            // Новые предметы появляются рядом с пользователем: за точку отсчёта берём камеру XR-рига.
+            Camera cam = Camera.main != null ? Camera.main : FindFirstObjectByType<Camera>();
+            if (cam != null) _preview.spawnAnchor = cam.transform;
         }
 
         private void OnDestroy()
@@ -67,6 +73,7 @@ namespace XrInterior.EditorXR
             {
                 _preview.ObjectViewBuilt -= OnObjectViewBuilt;
                 _preview.ViewRebuilt -= OnViewRebuilt;
+                _preview.ProjectReopened -= OnProjectReopened;
             }
             DisposeAction(_rotate); DisposeAction(_duplicate); DisposeAction(_delete);
             DisposeAction(_undo); DisposeAction(_redo);
@@ -79,12 +86,13 @@ namespace XrInterior.EditorXR
 
             // Кнопки контроллеров Touch и дублирующие клавиши 1-6 (для проверки без гарнитуры).
             Keyboard kb = Keyboard.current;
-            if (_rotate.WasPressedThisFrame() || KeyPressed(kb, 1)) Do(RotateSelected);
-            if (_duplicate.WasPressedThisFrame() || KeyPressed(kb, 2)) Do(DuplicateSelected);
-            if (_delete.WasPressedThisFrame() || KeyPressed(kb, 3)) Do(DeleteSelected);
-            if (_undo.WasPressedThisFrame() || KeyPressed(kb, 4)) Do(UndoLast);
-            if (_redo.WasPressedThisFrame() || KeyPressed(kb, 5)) Do(RedoLast);
-            if (KeyPressed(kb, 6)) Do(SelectNextObject);
+            if (_rotate.WasPressedThisFrame() || KeyPressed(kb, 2)) Do(() => RotateSelected(1f));
+            if (KeyPressed(kb, 1)) Do(() => RotateSelected(-1f));
+            if (_duplicate.WasPressedThisFrame() || KeyPressed(kb, 3)) Do(DuplicateSelected);
+            if (_delete.WasPressedThisFrame() || KeyPressed(kb, 4)) Do(DeleteSelected);
+            if (_undo.WasPressedThisFrame() || KeyPressed(kb, 5)) Do(UndoLast);
+            if (_redo.WasPressedThisFrame() || KeyPressed(kb, 6)) Do(RedoLast);
+            if (KeyPressed(kb, 7)) Do(SelectNextObject);
 
             if (_preview.Status != _shownStatus) UpdateHud();
         }
@@ -110,12 +118,26 @@ namespace XrInterior.EditorXR
             _preview.Status = r.Message + (r.Warning != null ? " Предупреждение: " + r.Warning : "");
         }
 
-        private void RotateSelected() { Report(_preview.Tools.RotateBy(_preview.Selection.SelectedId, 15f)); }
+        // direction: +1 по часовой, -1 против. Предмет поворачивается на 15°, стена на 90°.
+        private void RotateSelected(float direction)
+        {
+            if (!_preview.Selection.HasSelection) { _preview.Status = "Сначала выберите элемент."; return; }
+            bool isWall = _preview.Selection.KindOf(_preview.Projects.Current) == SelectionKind.Wall;
+            Report(_preview.Tools.RotateBy(_preview.Selection.SelectedId,
+                direction * (isWall ? EditorTools.WallRotationStep : 15f)));
+        }
 
-        private void DeleteSelected() { Report(_preview.Tools.Delete(_preview.Selection.SelectedId)); }
+        private void DeleteSelected()
+        {
+            if (!_preview.Selection.HasSelection) { _preview.Status = "Сначала выберите элемент."; return; }
+            if (_preview.Selection.SelectedPart != null) { _preview.Status = "Пол и потолок удалить нельзя."; return; }
+            Report(_preview.Tools.Delete(_preview.Selection.SelectedId));
+        }
 
         private void DuplicateSelected()
         {
+            if (_preview.Selection.KindOf(_preview.Projects.Current) != SelectionKind.Object)
+            { _preview.Status = "Копию можно сделать только у предмета."; return; }
             ToolResult r = _preview.Tools.Duplicate(_preview.Selection.SelectedId);
             Report(r);
             if (r.Success) _preview.Selection.Select(r.ObjectId);
@@ -207,15 +229,18 @@ namespace XrInterior.EditorXR
 
                 Vector3 local = _preview.ViewRoot.InverseTransformPoint(visual.position);
                 float dx = local.x - o.Position.X;
+                float dy = local.y - o.Position.Y;
                 float dz = local.z - o.Position.Z;
-                if (dx * dx + dz * dz < 0.02f * 0.02f)
+                if (dx * dx + dy * dy + dz * dz < 0.02f * 0.02f)
                 {
                     // Предмет почти не сдвинули: считаем это просто выбором, в историю ничего не пишем.
                     _preview.Status = "Выбран: " + NameOf(objectId) + ".";
                     return;
                 }
 
-                Do(() => Report(_preview.Tools.MoveTo(objectId, new PlanPoint(local.x, local.z))));
+                // Высоту передаём для предметов на стене (картину можно перевесить выше или ниже), остальным она не нужна.
+                float mountHeight = local.y - _preview.RoomElevation;
+                Do(() => Report(_preview.Tools.MoveTo(objectId, new PlanPoint(local.x, local.z), mountHeight)));
             }
             finally
             {
@@ -227,7 +252,16 @@ namespace XrInterior.EditorXR
 
         // ---------- XR-риг ----------
 
-        private void OnViewRebuilt()
+        private void OnViewRebuilt() { PlaceRig(); }
+
+        // Проект создан или открыт заново (например, другая комната): ставим риг в новое помещение.
+        private void OnProjectReopened()
+        {
+            _rigPlaced = false;
+            PlaceRig();
+        }
+
+        private void PlaceRig()
         {
             if (_rigPlaced || xrOrigin == null) return;
 
@@ -257,7 +291,7 @@ namespace XrInterior.EditorXR
             _duplicate = Bind("duplicate", "<XRController>{RightHand}/{SecondaryButton}"); // B
             _delete = Bind("delete", "<XRController>{RightHand}/{Primary2DAxisClick}");    // нажатие правого стика
             _undo = Bind("undo", "<XRController>{LeftHand}/{PrimaryButton}");              // X
-            _redo = Bind("redo", "<XRController>{LeftHand}/{SecondaryButton}");            // Y
+            _redo = Bind("redo", "<XRController>{LeftHand}/{Primary2DAxisClick}");         // нажатие левого стика
         }
 
         private static InputAction Bind(string name, string path)
@@ -299,7 +333,8 @@ namespace XrInterior.EditorXR
             if (_hud == null || _preview == null) return;
             _shownStatus = _preview.Status;
             _hud.text = _shownStatus
-                + "\nA/1: повернуть   B/2: копия   клик стика/3: удалить   X/4: отмена   Y/5: повтор   6: выбрать следующий";
+                + "\nA/2: повернуть   1: повернуть назад   B/3: копия   клик правого стика/4: удалить"
+                + "\nX/5: отмена   клик левого стика/6: повтор   7: выбрать следующий предмет";
         }
     }
 }

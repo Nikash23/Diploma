@@ -1,6 +1,11 @@
-// Наглядный предпросмотр проекта в Unity (нажать Play). Рисует комнату, стены, проёмы, объекты и светильники
-// простыми цветными блоками и даёт кнопки, чтобы испытать команды, undo/redo и сохранение.
-// Это инструмент проверки, не часть приложения. Работает в отдельной сцене, не трогая сцены команды.
+// Наглядный предпросмотр и тестовый редактор проекта в Unity (нажать Play). Рисует комнату, потолок, стены, проёмы,
+// предметы и светильники простыми цветными блоками и даёт меню для проверки команд, материалов, undo/redo и сохранения.
+// Это инструмент проверки, не часть приложения: готовый интерфейс сделает роль C. Работает в отдельной сцене.
+//
+// Меню действует на ВЫБРАННЫЙ элемент (предмет, стена, пол или потолок), выбранное отмечено жёлтым маркером.
+// Все действия выполняют EditorTools и команды (undo/redo); здесь правил размещения нет.
+// Кнопки не меняют проект прямо внутри OnGUI: нажатие запоминается и выполняется в Update (так Unity не путает
+// элементы меню между отрисовками).
 
 using System;
 using System.Collections.Generic;
@@ -12,18 +17,23 @@ namespace XrInterior.ProjectData.UnityIntegration
     public class ProjectPreview : MonoBehaviour
     {
         public enum PreviewSource { NewTemplateRoom, ControlProject }
-        private enum DemoSpot { Random, NearSouthWall, NearNorthWall, NearEastWall, Center, OnFakeTable }
 
         [Header("Что показать")]
         public PreviewSource source = PreviewSource.NewTemplateRoom;
 
-        [Header("Шаблон помещения (для NewTemplateRoom), размеры в метрах")]
+        [Header("Помещение (для NewTemplateRoom), размеры в метрах. Меняются и в меню «Комната».")]
         public RoomTemplate template = RoomTemplate.Rectangular;
-        public float width = 4f;
-        public float depth = 3f;
-        public float length = 8f;
-        public float cutWidth = 2.5f;
-        public float cutDepth = 2f;
+        public float rectWidth = 8f;
+        public float rectDepth = 6f;
+        public float lWidth = 10f;
+        public float lDepth = 8f;
+        public float lCutWidth = 4f;
+        public float lCutDepth = 3f;
+        public float corridorLength = 12f;
+        public float corridorWidth = 2.5f;
+
+        [Header("Потолок (его можно скрыть кнопкой в меню «Комната»)")]
+        public bool showCeiling = true;
 
         // Условные цвета материалов: настоящие текстуры сделает C, здесь важно лишь видеть, что материал сменился.
         private static readonly Dictionary<string, Color> MaterialColors = new Dictionary<string, Color>
@@ -55,6 +65,27 @@ namespace XrInterior.ProjectData.UnityIntegration
             if (materialId != null && MaterialColors.TryGetValue(materialId, out c)) return c;
             return Color.magenta;   // материал, которого нет в таблице цветов
         }
+        // Имитация результата сканирования: один «реальный стол» посреди помещения. Настоящую проверку даст сервис A.
+        private sealed class FakeReality : IRealityCollisionChecker
+        {
+            public Vector3 Center = new Vector3(2.5f, 0.4f, 1.5f);
+            public Vector3 Size = new Vector3(1.2f, 0.8f, 0.7f);
+
+            public bool IsBlocked(float centerX, float centerY, float centerZ,
+                float sizeX, float sizeY, float sizeZ, float yawDegrees, out string reason)
+            {
+                float yaw = yawDegrees * Mathf.Deg2Rad;
+                float hx = Mathf.Abs(Mathf.Cos(yaw)) * sizeX / 2f + Mathf.Abs(Mathf.Sin(yaw)) * sizeZ / 2f;
+                float hz = Mathf.Abs(Mathf.Sin(yaw)) * sizeX / 2f + Mathf.Abs(Mathf.Cos(yaw)) * sizeZ / 2f;
+                bool overlap = Mathf.Abs(centerX - Center.x) < hx + Size.x / 2f
+                               && Mathf.Abs(centerZ - Center.z) < hz + Size.z / 2f
+                               && Mathf.Abs(centerY - Center.y) < sizeY / 2f + Size.y / 2f;
+                reason = overlap ? "Пересекается с реальным столом (имитация сканирования)." : null;
+                return overlap;
+            }
+        }
+
+        // ---- Состояние ----
 
         private string _storageDir;
         private ProjectStorage _storage;
@@ -67,11 +98,17 @@ namespace XrInterior.ProjectData.UnityIntegration
         private readonly FakeReality _reality = new FakeReality();
         private GameObject _viewRoot;
         private bool _framed;
+        private string _status = "";
+        private bool _dirty;
+        private readonly Dictionary<string, GameObject> _markers = new Dictionary<string, GameObject>();
 
         // ---- Доступ для надстроек (например, XR-слоя XrEditorBridge). Здесь нет зависимостей от XR-пакетов. ----
 
         /// <summary>false - не двигать камеру сцены (нужно, когда в сцене есть XR-риг).</summary>
         public bool frameCamera = true;
+
+        /// <summary>Откуда брать место для новых предметов (например, камера игрока). null - центр помещения.</summary>
+        public Transform spawnAnchor;
 
         /// <summary>Пока значение больше нуля, сцена не перестраивается (например, предмет в руке).</summary>
         public int RebuildHolds { get; set; }
@@ -90,8 +127,8 @@ namespace XrInterior.ProjectData.UnityIntegration
         /// <summary>Вызывается после каждой перерисовки сцены.</summary>
         public event Action ViewRebuilt;
 
-        private bool _dirty;
-        private readonly Dictionary<string, GameObject> _markers = new Dictionary<string, GameObject>();
+        /// <summary>Вызывается, когда проект создан или открыт заново (новая комната, повторное открытие).</summary>
+        public event Action ProjectReopened;
 
         /// <summary>Просит перерисовать сцену при первой возможности (когда нет удержаний).</summary>
         public void RequestRebuild() { _dirty = true; }
@@ -110,53 +147,31 @@ namespace XrInterior.ProjectData.UnityIntegration
             minX = 0f; maxX = 4f; minZ = 0f; maxZ = 3f;
             Project p = _projects != null ? _projects.Current : null;
             if (p == null || p.Rooms.Count == 0) return false;
-            GetBounds(p, out minX, out maxX, out minZ, out maxZ);
+            PlanGeometry.Bounds(p.Rooms[0].Boundary, out minX, out maxX, out minZ, out maxZ);
             return true;
         }
+
+        /// <summary>Точка плана, где стоит пользователь (чуть впереди него). false, если якорь не задан.</summary>
+        public bool TryGetSpawnPoint(out PlanPoint point)
+        {
+            point = default(PlanPoint);
+            if (spawnAnchor == null || _viewRoot == null) return false;
+            Vector3 forward = spawnAnchor.forward;
+            forward.y = 0f;
+            Vector3 world = spawnAnchor.position;
+            if (forward.sqrMagnitude > 0.01f) world += forward.normalized * 1.2f;
+            Vector3 local = _viewRoot.transform.InverseTransformPoint(world);
+            point = new PlanPoint(local.x, local.z);
+            return true;
+        }
+
+        public void ApplyReality() { if (_tools != null) _tools.Reality = _fakeReality ? _reality : null; }
+
+        // ---------- запуск ----------
 
         private void Awake()
         {
             _selection.SelectionChanged += OnSelectionChanged;
-        }
-
-        private void Update()
-        {
-            if (_dirty && RebuildHolds <= 0 && _projects != null && _projects.Current != null)
-            {
-                _dirty = false;
-                Rebuild();
-            }
-        }
-
-        private void OnSelectionChanged(string id)
-        {
-            foreach (KeyValuePair<string, GameObject> m in _markers)
-                if (m.Value != null) m.Value.SetActive(m.Key == id);
-        }
-        private string _status = "";
-        private GUIStyle _label;
-        private GUIStyle _button;
-        private GUIStyle _statusLabel;
-        private Vector2 _scroll;
-
-        // Имитация результата сканирования: один "реальный стол". Настоящую проверку даст сервис A.
-        private sealed class FakeReality : IRealityCollisionChecker
-        {
-            public static readonly Vector3 Center = new Vector3(2.5f, 0.4f, 1.5f);
-            public static readonly Vector3 Size = new Vector3(1.2f, 0.8f, 0.7f);
-
-            public bool IsBlocked(float centerX, float centerY, float centerZ,
-                float sizeX, float sizeY, float sizeZ, float yawDegrees, out string reason)
-            {
-                float yaw = yawDegrees * Mathf.Deg2Rad;
-                float hx = Mathf.Abs(Mathf.Cos(yaw)) * sizeX / 2f + Mathf.Abs(Mathf.Sin(yaw)) * sizeZ / 2f;
-                float hz = Mathf.Abs(Mathf.Sin(yaw)) * sizeX / 2f + Mathf.Abs(Mathf.Cos(yaw)) * sizeZ / 2f;
-                bool overlap = Mathf.Abs(centerX - Center.x) < hx + Size.x / 2f
-                               && Mathf.Abs(centerZ - Center.z) < hz + Size.z / 2f
-                               && Mathf.Abs(centerY - Center.y) < sizeY / 2f + Size.y / 2f;
-                reason = overlap ? "Пересекается с реальным столом (имитация сканирования)." : null;
-                return overlap;
-            }
         }
 
         private void Start()
@@ -169,10 +184,37 @@ namespace XrInterior.ProjectData.UnityIntegration
             }
         }
 
+        private void Update()
+        {
+            if (_pending != null)
+            {
+                Action action = _pending;
+                _pending = null;
+                Run(action);
+            }
+            if (_dirty && RebuildHolds <= 0 && _projects != null && _projects.Current != null)
+            {
+                _dirty = false;
+                Rebuild();
+            }
+            RefreshUi();
+        }
+
         private void OnDestroy()
+        {
+            CleanStorage();
+        }
+
+        private void CleanStorage()
         {
             try { if (!string.IsNullOrEmpty(_storageDir) && Directory.Exists(_storageDir)) Directory.Delete(_storageDir, true); }
             catch (IOException) { }
+        }
+
+        private void OnSelectionChanged(string key)
+        {
+            foreach (KeyValuePair<string, GameObject> m in _markers)
+                if (m.Value != null) m.Value.SetActive(m.Key == key);
         }
 
         // ---------- проект ----------
@@ -189,7 +231,10 @@ namespace XrInterior.ProjectData.UnityIntegration
                 _catalog = null;
                 Debug.LogWarning("Каталог не загружен: " + ex.Message);
             }
+            BuildCategories();
 
+            if (_projects != null) _projects.ProjectChanged -= Rebuild;
+            CleanStorage();
             _storageDir = Path.Combine(Path.GetTempPath(), "xri_preview_" + Guid.NewGuid().ToString("N"));
             _storage = new ProjectStorage(_storageDir);
             _projects = new ProjectService(_storage);
@@ -207,7 +252,7 @@ namespace XrInterior.ProjectData.UnityIntegration
                 try
                 {
                     TemplateProjectBuilder.CreateFromTemplate(_projects, "Предпросмотр", spec);
-                    _status = "Создан новый проект из шаблона " + template + ".";
+                    _status = "Создана комната: " + TemplateName(template) + ".";
                 }
                 catch (ArgumentException ex)
                 {
@@ -217,7 +262,10 @@ namespace XrInterior.ProjectData.UnityIntegration
             }
 
             AttachCommands();
+            _framed = false;
+            PlaceFakeTable();
             Rebuild();
+            if (ProjectReopened != null) ProjectReopened();
         }
 
         private void AttachCommands()
@@ -225,7 +273,17 @@ namespace XrInterior.ProjectData.UnityIntegration
             _commands = new CommandService(_projects);
             _selection.Clear();
             _tools = _catalog != null ? new EditorTools(_projects, _commands, _catalog) : null;
+            ApplyReality();
             _projects.ProjectChanged += Rebuild;
+        }
+
+        // «Реальный стол» ставим внутрь помещения, чтобы его можно было найти в любой комнате.
+        private void PlaceFakeTable()
+        {
+            Project p = _projects != null ? _projects.Current : null;
+            if (p == null || p.Rooms.Count == 0) return;
+            PlanPoint c = PlanGeometry.InteriorPoint(p.Rooms[0].Boundary);
+            _reality.Center = new Vector3(c.X + 1.5f, p.Rooms[0].Elevation + _reality.Size.y / 2f, c.Z);
         }
 
         private Dictionary<string, float> ParamsFor(RoomTemplate t)
@@ -234,21 +292,32 @@ namespace XrInterior.ProjectData.UnityIntegration
             switch (t)
             {
                 case RoomTemplate.Corridor:
-                    p[TemplateParam.Length] = length;
-                    p[TemplateParam.Width] = width;
+                    p[TemplateParam.Length] = corridorLength;
+                    p[TemplateParam.Width] = corridorWidth;
                     break;
                 case RoomTemplate.LShaped:
-                    p[TemplateParam.Width] = width;
-                    p[TemplateParam.Depth] = depth;
-                    p[TemplateParam.CutWidth] = cutWidth;
-                    p[TemplateParam.CutDepth] = cutDepth;
+                    p[TemplateParam.Width] = lWidth;
+                    p[TemplateParam.Depth] = lDepth;
+                    p[TemplateParam.CutWidth] = lCutWidth;
+                    p[TemplateParam.CutDepth] = lCutDepth;
                     break;
                 default:
-                    p[TemplateParam.Width] = width;
-                    p[TemplateParam.Depth] = depth;
+                    p[TemplateParam.Width] = rectWidth;
+                    p[TemplateParam.Depth] = rectDepth;
                     break;
             }
             return p;
+        }
+
+        private static string TemplateName(RoomTemplate t)
+        {
+            switch (t)
+            {
+                case RoomTemplate.Rectangular: return "прямоугольная";
+                case RoomTemplate.LShaped: return "Г-образная";
+                case RoomTemplate.Corridor: return "коридор";
+                default: return t.ToString();
+            }
         }
 
         // ---------- рисование ----------
@@ -275,20 +344,33 @@ namespace XrInterior.ProjectData.UnityIntegration
             foreach (Room r in p.Rooms)
             {
                 DrawFloor(r);
+                if (showCeiling) DrawCeiling(r);
+                PlanPoint c = PlanGeometry.InteriorPoint(r.Boundary);
+                MakeMarker(r.Id + "#" + EditorSelection.PartFloor, _viewRoot.transform,
+                    new Vector3(c.X, r.Elevation + 0.35f, c.Z), 0.25f);
+                MakeMarker(r.Id + "#" + EditorSelection.PartCeiling, _viewRoot.transform,
+                    new Vector3(c.X, r.Elevation + r.Height - 0.35f, c.Z), 0.25f);
                 foreach (PlanPoint pt in r.Boundary)
                 {
                     minX = Mathf.Min(minX, pt.X); maxX = Mathf.Max(maxX, pt.X);
                     minZ = Mathf.Min(minZ, pt.Z); maxZ = Mathf.Max(maxZ, pt.Z);
                 }
             }
-            foreach (Wall w in p.Walls) DrawWall(w, BaseY(w, rooms));
+            foreach (Wall w in p.Walls)
+            {
+                float baseY = BaseY(w, rooms);
+                DrawWall(w, baseY);
+                MakeMarker(w.Id, _viewRoot.transform,
+                    new Vector3((w.A.X + w.B.X) / 2f, baseY + w.Height + 0.3f, (w.A.Z + w.B.Z) / 2f), 0.22f);
+            }
             foreach (Opening o in p.Openings) DrawOpening(o, walls, rooms);
             foreach (PlacedObject o in p.Objects) DrawObject(o);
             foreach (ProjectLight l in p.Lights) DrawLight(l);
             if (_fakeReality)
-                Box("Реальный стол (имитация)", FakeReality.Center, FakeReality.Size, Quaternion.identity,
+                Box("Реальный стол (имитация)", _reality.Center, _reality.Size, Quaternion.identity,
                     new Color(0.5f, 0.5f, 0.55f));
 
+            OnSelectionChanged(_selection.Key);
             if (frameCamera && !_framed && p.Rooms.Count > 0) FrameCamera(minX, maxX, minZ, maxZ);
             if (ViewRebuilt != null) ViewRebuilt();
         }
@@ -298,6 +380,21 @@ namespace XrInterior.ProjectData.UnityIntegration
             Room room;
             if (w.RoomId != null && rooms.TryGetValue(w.RoomId, out room)) return room.Elevation;
             return 0f;
+        }
+
+        // Жёлтый маркер выбора. Коллайдера нет, чтобы не мешать хвату в VR.
+        private GameObject MakeMarker(string key, Transform parent, Vector3 localPosition, float size)
+        {
+            GameObject marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            marker.name = "Выбран";
+            DestroyImmediate(marker.GetComponent<Collider>());
+            marker.transform.SetParent(parent, false);
+            marker.transform.localPosition = localPosition;
+            marker.transform.localScale = Vector3.one * size;
+            marker.GetComponent<Renderer>().material.color = new Color(1f, 0.9f, 0.1f);
+            marker.SetActive(false);
+            _markers[key] = marker;
+            return marker;
         }
 
         private void DrawWall(Wall w, float baseY)
@@ -353,7 +450,6 @@ namespace XrInterior.ProjectData.UnityIntegration
                 label = item.Name;
             }
 
-            Vector3 pos = new Vector3(o.Position.X, o.Position.Y, o.Position.Z) + rot * localCenter;
             float hue = Mathf.Abs((o.CatalogId ?? "").GetHashCode() % 100) / 100f;
 
             // Предметы, которые пересекаются со стеной, другим предметом или реальным объектом, красные.
@@ -383,15 +479,7 @@ namespace XrInterior.ProjectData.UnityIntegration
             body.GetComponent<Renderer>().material.color = color;
 
             // Жёлтый маркер над выбранным предметом (едет вместе с ним).
-            GameObject marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            marker.name = "Выбран";
-            DestroyImmediate(marker.GetComponent<Collider>());   // сразу, чтобы хват не увидел лишний коллайдер
-            marker.transform.SetParent(root.transform, false);
-            marker.transform.localPosition = localCenter + Vector3.up * (size.y / 2f + 0.25f);
-            marker.transform.localScale = Vector3.one * 0.15f;
-            marker.GetComponent<Renderer>().material.color = new Color(1f, 0.9f, 0.1f);
-            marker.SetActive(o.Id == _selection.SelectedId);
-            _markers[o.Id] = marker;
+            MakeMarker(o.Id, root.transform, localCenter + Vector3.up * (size.y / 2f + 0.25f), 0.15f);
 
             if (ObjectViewBuilt != null) ObjectViewBuilt(root, o);
         }
@@ -409,51 +497,59 @@ namespace XrInterior.ProjectData.UnityIntegration
 
         private void DrawFloor(Room r)
         {
+            string floorMaterial = MaterialRules.GetMaterialId(_projects.Current, r.Id, MaterialSlots.Floor);
+            Color color = floorMaterial != null ? MaterialColor(floorMaterial) : new Color(0.40f, 0.40f, 0.46f);
+            DrawPlane(r, "Пол ", r.Elevation, true, color, true);
+        }
+
+        // Потолок виден только снизу: сверху его нет, и камеру предпросмотра он не закрывает.
+        private void DrawCeiling(Room r)
+        {
+            string ceilingMaterial = MaterialRules.GetMaterialId(_projects.Current, r.Id, MaterialSlots.Ceiling);
+            Color color = ceilingMaterial != null ? MaterialColor(ceilingMaterial) : new Color(0.93f, 0.93f, 0.95f);
+            DrawPlane(r, "Потолок ", r.Elevation + r.Height, false, color, false);
+        }
+
+        // Плоскость по контуру помещения. facesUp = true: видна сверху (пол); false: видна снизу (потолок).
+        private void DrawPlane(Room r, string namePrefix, float y, bool facesUp, Color color, bool solid)
+        {
             var pts = new List<Vector2>();
             foreach (PlanPoint pt in r.Boundary) pts.Add(new Vector2(pt.X, pt.Z));
             int[] tris = Triangulate(pts);
             if (tris.Length == 0) return;
 
             int n = pts.Count;
-            var verts = new Vector3[n * 2];
-            var normals = new Vector3[n * 2];
+            var verts = new Vector3[n];
+            var normals = new Vector3[n];
             for (int i = 0; i < n; i++)
             {
-                verts[i] = new Vector3(pts[i].x, r.Elevation, pts[i].y);
-                verts[i + n] = verts[i];
-                normals[i] = Vector3.up;
-                normals[i + n] = Vector3.down;
+                verts[i] = new Vector3(pts[i].x, y, pts[i].y);
+                normals[i] = facesUp ? Vector3.up : Vector3.down;
             }
 
-            // Пол рисуем с обеих сторон, чтобы он был виден при любом направлении взгляда.
-            var indices = new int[tris.Length * 2];
+            var indices = new int[tris.Length];
             for (int t = 0; t < tris.Length; t += 3)
             {
                 indices[t] = tris[t];
-                indices[t + 1] = tris[t + 2];
-                indices[t + 2] = tris[t + 1];
-                indices[tris.Length + t] = tris[t] + n;
-                indices[tris.Length + t + 1] = tris[t + 1] + n;
-                indices[tris.Length + t + 2] = tris[t + 2] + n;
+                indices[t + 1] = facesUp ? tris[t + 2] : tris[t + 1];
+                indices[t + 2] = facesUp ? tris[t + 1] : tris[t + 2];
             }
 
-            var mesh = new Mesh { name = "Пол" };
+            var mesh = new Mesh { name = namePrefix + r.Name };
             mesh.vertices = verts;
             mesh.triangles = indices;
             mesh.normals = normals;
             mesh.RecalculateBounds();
 
             GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            go.name = "Пол " + r.Name;
+            go.name = namePrefix + r.Name;
             go.transform.SetParent(_viewRoot.transform, false);
             go.transform.localPosition = Vector3.zero;
             go.transform.localScale = Vector3.one;
             Destroy(go.GetComponent<Collider>());
             go.GetComponent<MeshFilter>().sharedMesh = mesh;
-            go.AddComponent<MeshCollider>().sharedMesh = mesh;   // твёрдый пол: на нём стоит XR-риг
-            string floorMaterial = MaterialRules.GetMaterialId(_projects.Current, r.Id, MaterialSlots.Floor);
-            go.GetComponent<Renderer>().material.color =
-                floorMaterial != null ? MaterialColor(floorMaterial) : new Color(0.40f, 0.40f, 0.46f);
+            if (solid) go.AddComponent<MeshCollider>().sharedMesh = mesh;   // твёрдый пол: на нём стоит XR-риг
+            go.GetComponent<Renderer>().material.color = color;
         }
 
         private GameObject Box(string objName, Vector3 center, Vector3 size, Quaternion rot, Color color)
@@ -477,6 +573,726 @@ namespace XrInterior.ProjectData.UnityIntegration
             cam.transform.position = center + new Vector3(0f, size * 1.1f, -size * 0.9f);
             cam.transform.LookAt(center);
             _framed = true;
+        }
+
+        private static int FloorOf(Project p)
+        {
+            return p.Rooms.Count > 0 ? p.Rooms[0].Floor : 1;
+        }
+
+        // =====================================================================
+        // Меню
+        // =====================================================================
+
+        private Action _pending;
+        private UiState _ui = new UiState();
+        private readonly List<CategoryUi> _categories = new List<CategoryUi>();
+        private int _categoryIndex;
+        private bool _wallsAll;
+        private readonly HashSet<string> _closed = new HashSet<string> { "room", "reality" };
+        private Vector2 _scroll;
+        private GUIStyle _label, _statusLabel, _button, _rowButton, _header, _swatchDark, _swatchLight, _toggle;
+
+        private sealed class SwatchUi
+        {
+            public string Id;
+            public string Name;
+            public Color Color;
+            public bool Current;
+        }
+
+        private sealed class ItemUi
+        {
+            public string Id;
+            public string Name;
+        }
+
+        private sealed class CategoryUi
+        {
+            public string Name;
+            public List<ItemUi> Items = new List<ItemUi>();
+        }
+
+        // Снимок состояния для OnGUI. Меняется только в Update, поэтому меню не «ломается» посреди отрисовки.
+        private sealed class UiState
+        {
+            public bool HasProject;
+            public string Title = "";
+            public int Walls;
+            public int Objects;
+            public int UndoCount;
+            public bool CanUndo;
+            public bool CanRedo;
+            public string UndoName = "";
+            public string RedoName = "";
+            public bool HasRoom;
+            public string FloorText = "";
+            public string CeilingText = "";
+            public Color FloorColor = Color.gray;
+            public Color CeilingColor = Color.gray;
+            public SelectionKind Kind;
+            public string SelectionLabel = "ничего не выбрано";
+            public string SelectionMaterialText = "";
+            public Color SelectionColor = Color.gray;
+            public bool IsWallItem;
+            public bool WallInRoom;
+            public string MaterialTitle = "";
+            public bool CanResetMaterial;
+            public List<SwatchUi> Swatches = new List<SwatchUi>();
+        }
+
+        private void BuildCategories()
+        {
+            _categories.Clear();
+            if (_catalog == null) return;
+            foreach (CatalogCategory c in _catalog.GetCategories())
+            {
+                var ui = new CategoryUi { Name = c.Name };
+                foreach (CatalogItem item in _catalog.Search(null, c.Id))
+                    ui.Items.Add(new ItemUi { Id = item.Id, Name = item.Name });
+                if (ui.Items.Count > 0) _categories.Add(ui);
+            }
+            if (_categoryIndex >= _categories.Count) _categoryIndex = 0;
+        }
+
+        private string MaterialText(Project p, string targetId, string slot)
+        {
+            string id = MaterialRules.GetMaterialId(p, targetId, slot);
+            if (id == null) return "по умолчанию";
+            MaterialInfo info = _catalog != null ? _catalog.GetMaterial(id) : null;
+            return info != null ? info.Name : id;
+        }
+
+        private static Color MaterialColorOrGray(string materialId)
+        {
+            return materialId == null ? new Color(0.5f, 0.5f, 0.5f) : MaterialColor(materialId);
+        }
+
+        private void RefreshUi()
+        {
+            var ui = new UiState();
+            Project p = _projects != null ? _projects.Current : null;
+            if (p != null && _commands != null)
+            {
+                ui.HasProject = true;
+                ui.Title = p.Name + " (источник: " + p.Source + ")";
+                ui.Walls = p.Walls.Count;
+                ui.Objects = p.Objects.Count;
+                ui.UndoCount = _commands.UndoCount;
+                ui.CanUndo = _commands.CanUndo;
+                ui.CanRedo = _commands.CanRedo;
+                ui.UndoName = ui.CanUndo ? _commands.NextUndoName : "";
+                ui.RedoName = ui.CanRedo ? _commands.NextRedoName : "";
+
+                if (p.Rooms.Count > 0)
+                {
+                    Room room = p.Rooms[0];
+                    ui.HasRoom = true;
+                    ui.FloorText = MaterialText(p, room.Id, MaterialSlots.Floor);
+                    ui.CeilingText = MaterialText(p, room.Id, MaterialSlots.Ceiling);
+                    ui.FloorColor = MaterialColorOrGray(MaterialRules.GetMaterialId(p, room.Id, MaterialSlots.Floor));
+                    ui.CeilingColor = MaterialColorOrGray(MaterialRules.GetMaterialId(p, room.Id, MaterialSlots.Ceiling));
+                }
+
+                ui.Kind = _selection.KindOf(p);
+                string target = _selection.SelectedId;
+                string slot = MaterialSlots.Surface;
+                switch (ui.Kind)
+                {
+                    case SelectionKind.Object:
+                    {
+                        PlacedObject o = p.Objects.Find(x => x.Id == target);
+                        CatalogItem item = (o != null && _catalog != null) ? _catalog.GetItem(o.CatalogId) : null;
+                        ui.SelectionLabel = "Предмет: " + (item != null ? item.Name : (o != null ? o.CatalogId : "?"));
+                        ui.IsWallItem = item != null && item.Placement == PlacementRule.Wall;
+                        ui.MaterialTitle = "материал предмета";
+                        break;
+                    }
+                    case SelectionKind.Wall:
+                    {
+                        Wall w = p.Walls.Find(x => x.Id == target);
+                        ui.SelectionLabel = "Стена" + (w != null ? " (" + WallRules.Length(w).ToString("0.0") + " м)" : "");
+                        ui.WallInRoom = w != null && w.RoomId != null;
+                        ui.MaterialTitle = "материал стены";
+                        break;
+                    }
+                    case SelectionKind.Floor:
+                        ui.SelectionLabel = "Пол";
+                        ui.MaterialTitle = "материал пола";
+                        slot = MaterialSlots.Floor;
+                        break;
+                    case SelectionKind.Ceiling:
+                        ui.SelectionLabel = "Потолок";
+                        ui.MaterialTitle = "материал потолка";
+                        slot = MaterialSlots.Ceiling;
+                        break;
+                }
+
+                if (ui.Kind != SelectionKind.None && _catalog != null)
+                {
+                    string current = MaterialRules.GetMaterialId(p, target, slot);
+                    ui.CanResetMaterial = current != null;
+                    ui.SelectionMaterialText = MaterialText(p, target, slot);
+                    ui.SelectionColor = MaterialColorOrGray(current);
+                    foreach (MaterialInfo m in MaterialRules.GetAllowedMaterials(p, _catalog, target, slot))
+                        ui.Swatches.Add(new SwatchUi { Id = m.Id, Name = m.Name, Color = MaterialColor(m.Id), Current = m.Id == current });
+                }
+            }
+            _ui = ui;
+        }
+
+        private void EnsureStyles()
+        {
+            if (_label != null) return;
+            _label = new GUIStyle(GUI.skin.label) { fontSize = 14, wordWrap = true };
+            _label.normal.textColor = Color.white;
+            _statusLabel = new GUIStyle(_label) { fontStyle = FontStyle.Bold };
+            _statusLabel.normal.textColor = new Color(1f, 0.9f, 0.3f);
+            _button = new GUIStyle(GUI.skin.button) { fontSize = 14, fixedHeight = 28f };
+            _rowButton = new GUIStyle(_button) { alignment = TextAnchor.MiddleLeft };
+            _header = new GUIStyle(GUI.skin.button) { fontSize = 15, fontStyle = FontStyle.Bold, fixedHeight = 30f, alignment = TextAnchor.MiddleLeft };
+            _swatchDark = new GUIStyle(_button) { fontSize = 12, clipping = TextClipping.Clip };
+            _swatchLight = new GUIStyle(_swatchDark);
+            SetTextColor(_swatchDark, Color.white);
+            SetTextColor(_swatchLight, Color.black);
+            _toggle = new GUIStyle(GUI.skin.toggle) { fontSize = 14 };
+            _toggle.normal.textColor = Color.white;
+            _toggle.onNormal.textColor = Color.white;
+            _toggle.hover.textColor = Color.white;
+            _toggle.onHover.textColor = Color.white;
+        }
+
+        private static void SetTextColor(GUIStyle style, Color color)
+        {
+            style.normal.textColor = color;
+            style.hover.textColor = color;
+            style.active.textColor = color;
+            style.focused.textColor = color;
+        }
+
+        private static float Luminance(Color c) { return 0.3f * c.r + 0.59f * c.g + 0.11f * c.b; }
+
+        // ---- элементы меню ----
+
+        private void Btn(string text, Action action, bool enabled = true)
+        {
+            bool old = GUI.enabled;
+            GUI.enabled = old && enabled;
+            if (GUILayout.Button(text, _button) && action != null && _pending == null) _pending = action;
+            GUI.enabled = old;
+        }
+
+        private void ToggleBtn(string text, bool on, Action action)
+        {
+            Color old = GUI.backgroundColor;
+            if (on) GUI.backgroundColor = new Color(1f, 0.9f, 0.3f);
+            if (GUILayout.Button(text, _button) && action != null && _pending == null) _pending = action;
+            GUI.backgroundColor = old;
+        }
+
+        private bool Section(string key, string title)
+        {
+            bool open = !_closed.Contains(key);
+            if (GUILayout.Button((open ? "[-] " : "[+] ") + title, _header) && _pending == null)
+            {
+                string k = key;
+                _pending = () => { if (!_closed.Remove(k)) _closed.Add(k); };
+            }
+            return open;
+        }
+
+        private void ColorRow(Color color, string text, Action onClick)
+        {
+            GUILayout.BeginHorizontal();
+            Rect swatch = GUILayoutUtility.GetRect(18f, 18f, GUILayout.Width(18f), GUILayout.Height(18f));
+            Color old = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(swatch, Texture2D.whiteTexture);
+            GUI.color = old;
+            if (onClick != null)
+            {
+                if (GUILayout.Button(text, _rowButton) && _pending == null) _pending = onClick;
+            }
+            else GUILayout.Label(text, _label);
+            GUILayout.EndHorizontal();
+        }
+
+        private void Stepper(string title, float value, Action<float> set, float min, float max, float step)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(title, _label, GUILayout.Width(190f));
+            float lower = Mathf.Max(min, value - step);
+            float upper = Mathf.Min(max, value + step);
+            if (GUILayout.Button("-", _button, GUILayout.Width(36f)) && _pending == null) _pending = () => set(lower);
+            GUILayout.Label(value.ToString("0.0") + " м", _label, GUILayout.Width(60f));
+            if (GUILayout.Button("+", _button, GUILayout.Width(36f)) && _pending == null) _pending = () => set(upper);
+            GUILayout.EndHorizontal();
+        }
+
+        // ---- отрисовка ----
+
+        private void OnGUI()
+        {
+            EnsureStyles();
+            float scale = Mathf.Clamp(Screen.height / 720f, 0.8f, 1.6f);
+            GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
+            GUILayout.BeginArea(new Rect(8f, 8f, 440f, Screen.height / scale - 16f), GUI.skin.box);
+
+            UiState ui = _ui;
+            if (!ui.HasProject)
+            {
+                GUILayout.Label(_status, _statusLabel);
+                Btn("Создать комнату", () => { source = PreviewSource.NewTemplateRoom; BuildProject(); });
+                GUILayout.EndArea();
+                return;
+            }
+
+            GUILayout.Label("Проект: " + ui.Title, _label);
+            GUILayout.Label("Стен: " + ui.Walls + "   Предметов: " + ui.Objects + "   Команд в истории: " + ui.UndoCount, _label);
+            GUILayout.Label("» " + _status, _statusLabel);
+
+            // Цветовая полоса: пол и потолок (нажатие выбирает их) и выбранный элемент.
+            if (ui.HasRoom)
+            {
+                ColorRow(ui.FloorColor, "Пол: " + ui.FloorText, SelectFloor);
+                ColorRow(ui.CeilingColor, "Потолок: " + ui.CeilingText, SelectCeiling);
+            }
+            ColorRow(ui.SelectionColor, "Выбрано: " + ui.SelectionLabel
+                + (ui.Kind != SelectionKind.None ? " - " + ui.SelectionMaterialText : ""), null);
+            GUILayout.Space(4f);
+
+            _scroll = GUILayout.BeginScrollView(_scroll);
+
+            if (Section("select", "Выбор"))
+            {
+                GUILayout.BeginHorizontal();
+                Btn("← Предмет", () => SelectCycle(SelectionKind.Object, -1));
+                Btn("Предмет →", () => SelectCycle(SelectionKind.Object, 1));
+                GUILayout.EndHorizontal();
+                GUILayout.BeginHorizontal();
+                Btn("← Стена", () => SelectCycle(SelectionKind.Wall, -1));
+                Btn("Стена →", () => SelectCycle(SelectionKind.Wall, 1));
+                GUILayout.EndHorizontal();
+                GUILayout.BeginHorizontal();
+                Btn("Пол", SelectFloor, ui.HasRoom);
+                Btn("Потолок", SelectCeiling, ui.HasRoom);
+                Btn("Снять выбор", _selection.Clear, ui.Kind != SelectionKind.None);
+                GUILayout.EndHorizontal();
+            }
+
+            if (Section("selected", "Выбранный элемент: " + ui.SelectionLabel))
+            {
+                DrawSelectedSection(ui);
+            }
+
+            if (Section("add", "Добавить"))
+            {
+                DrawAddSection(ui);
+            }
+
+            if (Section("room", "Комната и потолок"))
+            {
+                DrawRoomSection();
+            }
+
+            if (Section("reality", "Реальная геометрия (имитация скана)"))
+            {
+                Btn(_fakeReality ? "Убрать «реальный стол»" : "Показать «реальный стол»", ToggleReality);
+                GUILayout.Label("Предмет, который пересекается с «реальным столом», становится красным (как и при пересечении со стеной или другим предметом).", _label);
+            }
+
+            if (Section("history", "История и сохранение"))
+            {
+                Btn("Отменить" + (ui.CanUndo ? ": " + ui.UndoName : ""), UndoAction, ui.CanUndo);
+                Btn("Повторить" + (ui.CanRedo ? ": " + ui.RedoName : ""), RedoAction, ui.CanRedo);
+                Btn("Сохранить и открыть заново", ReopenFromDisk);
+            }
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void DrawSelectedSection(UiState ui)
+        {
+            if (ui.Kind == SelectionKind.None)
+            {
+                GUILayout.Label("Выберите предмет, стену, пол или потолок: кнопками в блоке «Выбор» или (в VR) хватом предмета.", _label);
+                return;
+            }
+
+            bool movable = ui.Kind == SelectionKind.Object || ui.Kind == SelectionKind.Wall;
+            if (movable)
+            {
+                if (ui.IsWallItem)
+                {
+                    GUILayout.Label("Предмет на стене: вдоль стены и по высоте, шаг 0,25 м.", _label);
+                    GUILayout.BeginHorizontal();
+                    Btn("← вдоль стены", () => SlideSelected(-EditorTools.MoveStep));
+                    Btn("вдоль стены →", () => SlideSelected(EditorTools.MoveStep));
+                    GUILayout.EndHorizontal();
+                    GUILayout.BeginHorizontal();
+                    Btn("↑ выше", () => RaiseSelected(EditorTools.MoveStep));
+                    Btn("↓ ниже", () => RaiseSelected(-EditorTools.MoveStep));
+                    GUILayout.EndHorizontal();
+                }
+                else
+                {
+                    GUILayout.Label("Сдвиг на 0,25 м:", _label);
+                    GUILayout.BeginHorizontal();
+                    Btn("← влево", () => MoveSelected(-EditorTools.MoveStep, 0f));
+                    Btn("вправо →", () => MoveSelected(EditorTools.MoveStep, 0f));
+                    GUILayout.EndHorizontal();
+                    GUILayout.BeginHorizontal();
+                    Btn("↑ вперёд", () => MoveSelected(0f, EditorTools.MoveStep));
+                    Btn("↓ назад", () => MoveSelected(0f, -EditorTools.MoveStep));
+                    GUILayout.EndHorizontal();
+                }
+
+                if (ui.Kind == SelectionKind.Wall)
+                {
+                    GUILayout.BeginHorizontal();
+                    Btn("Повернуть -90°", () => RotateSelected(-EditorTools.WallRotationStep));
+                    Btn("Повернуть +90°", () => RotateSelected(EditorTools.WallRotationStep));
+                    GUILayout.EndHorizontal();
+                    GUILayout.BeginHorizontal();
+                    Btn("Добавить окно", () => AddOpeningToSelected(OpeningType.Window));
+                    Btn("Добавить дверь", () => AddOpeningToSelected(OpeningType.Door));
+                    GUILayout.EndHorizontal();
+                }
+                else if (!ui.IsWallItem)
+                {
+                    GUILayout.BeginHorizontal();
+                    Btn("Повернуть -15°", () => RotateSelected(-15f));
+                    Btn("Повернуть +15°", () => RotateSelected(15f));
+                    GUILayout.EndHorizontal();
+                }
+
+                GUILayout.BeginHorizontal();
+                if (ui.Kind == SelectionKind.Object) Btn("Дублировать", DuplicateSelected);
+                Btn("Удалить", DeleteSelected);
+                GUILayout.EndHorizontal();
+            }
+
+            // Материал выбранного: цветные кнопки только из допустимых для этого элемента.
+            GUILayout.Space(4f);
+            if (ui.Swatches.Count == 0)
+            {
+                GUILayout.Label("Для этого элемента материал менять нельзя (в каталоге нет допустимых).", _label);
+                return;
+            }
+
+            GUILayout.Label("Сменить " + ui.MaterialTitle + " (отмечен точкой):", _label);
+            if (ui.Kind == SelectionKind.Wall && ui.WallInRoom)
+            {
+                bool value = GUILayout.Toggle(_wallsAll, "На все стены комнаты сразу", _toggle);
+                if (value != _wallsAll && _pending == null) { bool nv = value; _pending = () => _wallsAll = nv; }
+            }
+
+            GUILayout.BeginHorizontal();
+            for (int i = 0; i < ui.Swatches.Count; i++)
+            {
+                if (i > 0 && i % 3 == 0) { GUILayout.EndHorizontal(); GUILayout.BeginHorizontal(); }
+                SwatchUi s = ui.Swatches[i];
+                Color old = GUI.backgroundColor;
+                GUI.backgroundColor = s.Color;
+                GUIStyle style = Luminance(s.Color) > 0.55f ? _swatchLight : _swatchDark;
+                if (GUILayout.Button((s.Current ? "• " : "") + s.Name, style) && _pending == null)
+                {
+                    string materialId = s.Id;
+                    _pending = () => ApplyMaterial(materialId);
+                }
+                GUI.backgroundColor = old;
+            }
+            GUILayout.EndHorizontal();
+            Btn("Сбросить к умолчанию", ResetMaterial, ui.CanResetMaterial);
+        }
+
+        private void DrawAddSection(UiState ui)
+        {
+            if (_catalog == null || _categories.Count == 0)
+            {
+                GUILayout.Label("Каталог не загружен.", _label);
+            }
+            else
+            {
+                GUILayout.BeginHorizontal();
+                for (int i = 0; i < _categories.Count; i++)
+                {
+                    if (i > 0 && i % 3 == 0) { GUILayout.EndHorizontal(); GUILayout.BeginHorizontal(); }
+                    int index = i;
+                    ToggleBtn(_categories[i].Name, i == _categoryIndex, () => _categoryIndex = index);
+                }
+                GUILayout.EndHorizontal();
+
+                CategoryUi category = _categories[Mathf.Clamp(_categoryIndex, 0, _categories.Count - 1)];
+                GUILayout.BeginHorizontal();
+                for (int i = 0; i < category.Items.Count; i++)
+                {
+                    if (i > 0 && i % 2 == 0) { GUILayout.EndHorizontal(); GUILayout.BeginHorizontal(); }
+                    string id = category.Items[i].Id;
+                    Btn(category.Items[i].Name, () => AddItem(id));
+                }
+                GUILayout.EndHorizontal();
+                GUILayout.Label("Предмет появляется рядом с вами (или в центре комнаты). Если свободного места нет, он всё равно появится, красным.", _label);
+            }
+
+            GUILayout.Space(4f);
+            Btn("Добавить перегородку", AddPartitionAction, ui.HasRoom);
+        }
+
+        private void DrawRoomSection()
+        {
+            GUILayout.BeginHorizontal();
+            ToggleBtn("Прямоугольная", template == RoomTemplate.Rectangular, () => template = RoomTemplate.Rectangular);
+            ToggleBtn("Г-образная", template == RoomTemplate.LShaped, () => template = RoomTemplate.LShaped);
+            ToggleBtn("Коридор", template == RoomTemplate.Corridor, () => template = RoomTemplate.Corridor);
+            GUILayout.EndHorizontal();
+
+            switch (template)
+            {
+                case RoomTemplate.LShaped:
+                    Stepper("Ширина", lWidth, v => lWidth = v, 4f, 30f, 0.5f);
+                    Stepper("Глубина", lDepth, v => lDepth = v, 4f, 30f, 0.5f);
+                    Stepper("Вырез: ширина", lCutWidth, v => lCutWidth = v, 1f, 20f, 0.5f);
+                    Stepper("Вырез: глубина", lCutDepth, v => lCutDepth = v, 1f, 20f, 0.5f);
+                    break;
+                case RoomTemplate.Corridor:
+                    Stepper("Длина", corridorLength, v => corridorLength = v, 3f, 40f, 0.5f);
+                    Stepper("Ширина", corridorWidth, v => corridorWidth = v, 1.2f, 8f, 0.5f);
+                    break;
+                default:
+                    Stepper("Ширина", rectWidth, v => rectWidth = v, 2f, 30f, 0.5f);
+                    Stepper("Глубина", rectDepth, v => rectDepth = v, 2f, 30f, 0.5f);
+                    break;
+            }
+
+            Btn("Создать комнату заново (предметы пропадут)", () => { source = PreviewSource.NewTemplateRoom; BuildProject(); });
+            GUILayout.Space(4f);
+            Btn(showCeiling ? "Скрыть потолок" : "Показать потолок", ToggleCeiling);
+        }
+
+        // =====================================================================
+        // Действия меню (выполняются в Update)
+        // =====================================================================
+
+        private void Run(Action action)
+        {
+            try
+            {
+                ApplyReality();
+                action();
+            }
+            catch (Exception ex)
+            {
+                _status = "Ошибка: " + ex.Message;
+                Debug.LogError(ex);
+            }
+        }
+
+        private void Report(ToolResult r)
+        {
+            _status = r.Message + (r.Warning != null ? " Красный: " + r.Warning : "");
+        }
+
+        private bool ToolsReady()
+        {
+            if (_tools != null && _projects != null && _projects.Current != null) return true;
+            _status = "Каталог не загружен, инструменты недоступны.";
+            return false;
+        }
+
+        private PlanPoint NearPoint()
+        {
+            PlanPoint near;
+            if (TryGetSpawnPoint(out near)) return near;
+            Project p = _projects.Current;
+            return PlanGeometry.InteriorPoint(p.Rooms[0].Boundary);
+        }
+
+        private void SelectCycle(SelectionKind kind, int step)
+        {
+            string id = _selection.Cycle(_projects.Current, kind, step);
+            RefreshUi();
+            if (id == null) _status = kind == SelectionKind.Wall ? "Стен нет." : "Предметов нет.";
+            else _status = "Выбрано: " + _ui.SelectionLabel + ".";
+        }
+
+        private void SelectFloor()
+        {
+            Project p = _projects.Current;
+            if (p.Rooms.Count == 0) return;
+            _selection.SelectRoomPart(p.Rooms[0].Id, EditorSelection.PartFloor);
+            _status = "Выбран пол.";
+        }
+
+        private void SelectCeiling()
+        {
+            Project p = _projects.Current;
+            if (p.Rooms.Count == 0) return;
+            _selection.SelectRoomPart(p.Rooms[0].Id, EditorSelection.PartCeiling);
+            _status = "Выбран потолок.";
+        }
+
+        private void AddItem(string catalogId)
+        {
+            if (!ToolsReady()) return;
+            ToolResult r = _tools.AddFromCatalog(catalogId, NearPoint());
+            Report(r);
+            if (r.Success && r.ObjectId != null) _selection.Select(r.ObjectId);
+        }
+
+        private void AddPartitionAction()
+        {
+            if (!ToolsReady()) return;
+            ToolResult r = _tools.AddPartition(NearPoint());
+            Report(r);
+            if (r.Success && r.ObjectId != null) _selection.Select(r.ObjectId);
+        }
+
+        private void MoveSelected(float dx, float dz)
+        {
+            if (!ToolsReady() || !_selection.HasSelection) return;
+            Report(_tools.MoveBy(_selection.SelectedId, dx, dz));
+        }
+
+        private void SlideSelected(float meters)
+        {
+            if (!ToolsReady() || !_selection.HasSelection) return;
+            Report(_tools.SlideBy(_selection.SelectedId, meters));
+        }
+
+        private void RaiseSelected(float meters)
+        {
+            if (!ToolsReady() || !_selection.HasSelection) return;
+            Report(_tools.RaiseBy(_selection.SelectedId, meters));
+        }
+
+        private void RotateSelected(float degrees)
+        {
+            if (!ToolsReady() || !_selection.HasSelection) return;
+            Report(_tools.RotateBy(_selection.SelectedId, degrees));
+        }
+
+        private void DuplicateSelected()
+        {
+            if (!ToolsReady() || !_selection.HasSelection) return;
+            ToolResult r = _tools.Duplicate(_selection.SelectedId);
+            Report(r);
+            if (r.Success && r.ObjectId != null) _selection.Select(r.ObjectId);
+        }
+
+        private void DeleteSelected()
+        {
+            if (!ToolsReady() || !_selection.HasSelection) return;
+            Report(_tools.Delete(_selection.SelectedId));
+        }
+
+        private void AddOpeningToSelected(OpeningType type)
+        {
+            if (!ToolsReady() || !_selection.HasSelection) return;
+            Report(_tools.AddOpening(_selection.SelectedId, type));
+        }
+
+        private void ToggleReality()
+        {
+            _fakeReality = !_fakeReality;
+            ApplyReality();
+            _status = _fakeReality ? "«Реальный стол» показан." : "«Реальный стол» убран.";
+            Rebuild();
+        }
+
+        private void ToggleCeiling()
+        {
+            showCeiling = !showCeiling;
+            Rebuild();
+        }
+
+        private void UndoAction()
+        {
+            string name = _commands.NextUndoName;
+            _commands.Undo();
+            _status = "Отменено: " + name + ".";
+        }
+
+        private void RedoAction()
+        {
+            string name = _commands.NextRedoName;
+            _commands.Redo();
+            _status = "Повторено: " + name + ".";
+        }
+
+        // ---------- материалы (B-12) ----------
+
+        private string SlotOfSelection(SelectionKind kind)
+        {
+            if (kind == SelectionKind.Floor) return MaterialSlots.Floor;
+            if (kind == SelectionKind.Ceiling) return MaterialSlots.Ceiling;
+            return MaterialSlots.Surface;
+        }
+
+        private void ApplyMaterial(string materialId)
+        {
+            Project p = _projects.Current;
+            SelectionKind kind = _selection.KindOf(p);
+            if (kind == SelectionKind.None) { _status = "Сначала выберите элемент."; return; }
+
+            string target = _selection.SelectedId;
+            MaterialInfo info = _catalog.GetMaterial(materialId);
+            string name = info != null ? info.Name : materialId;
+
+            if (kind == SelectionKind.Wall && _wallsAll)
+            {
+                Wall wall = p.Walls.Find(w => w.Id == target);
+                if (wall != null && wall.RoomId != null)
+                {
+                    _commands.Execute(MaterialCommands.ApplyToRoomWalls(p, wall.RoomId, materialId, _catalog));
+                    _status = "Все стены комнаты: " + name + ".";
+                    return;
+                }
+            }
+
+            _commands.Execute(new SetMaterialCommand(target, SlotOfSelection(kind), materialId, _catalog));
+            _status = _ui.SelectionLabel + ": " + name + ".";
+        }
+
+        private void ResetMaterial()
+        {
+            Project p = _projects.Current;
+            SelectionKind kind = _selection.KindOf(p);
+            if (kind == SelectionKind.None) return;
+            string target = _selection.SelectedId;
+
+            if (kind == SelectionKind.Wall && _wallsAll)
+            {
+                Wall wall = p.Walls.Find(w => w.Id == target);
+                if (wall != null && wall.RoomId != null)
+                {
+                    var commands = new List<ICommand>();
+                    foreach (Wall w in p.Walls)
+                        if (w.RoomId == wall.RoomId)
+                            commands.Add(new SetMaterialCommand(w.Id, MaterialSlots.Surface, null, _catalog));
+                    _commands.Execute(new CompositeCommand("Сбросить материалы стен", commands));
+                    _status = "Материалы всех стен комнаты сброшены.";
+                    return;
+                }
+            }
+
+            _commands.Execute(new SetMaterialCommand(target, SlotOfSelection(kind), null, _catalog));
+            _status = "Материал сброшен к умолчанию.";
+        }
+
+        private void ReopenFromDisk()
+        {
+            _projects.Save();
+            string id = _projects.Current.Id;
+
+            _projects.ProjectChanged -= Rebuild;
+            _projects = new ProjectService(new ProjectStorage(_storageDir));
+            _projects.Load(id);
+            AttachCommands();
+            Rebuild();
+
+            _status = "Проект записан на диск и открыт заново. Предметов: " + _projects.Current.Objects.Count + ".";
         }
 
         // Разбиение многоугольника на треугольники (метод "отсечения ушей").
@@ -538,420 +1354,6 @@ namespace XrInterior.ProjectData.UnityIntegration
             bool hasNeg = d1 < 0f || d2 < 0f || d3 < 0f;
             bool hasPos = d1 > 0f || d2 > 0f || d3 > 0f;
             return !(hasNeg && hasPos);
-        }
-
-        // ---------- кнопки ----------
-
-        private void OnGUI()
-        {
-            EnsureStyles();
-            // Панель подстраивается под размер окна Game.
-            float scale = Mathf.Clamp(Screen.height / 720f, 0.8f, 1.6f);
-            GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
-            GUILayout.BeginArea(new Rect(8f, 8f, 400f, Screen.height / scale - 16f), GUI.skin.box);
-
-            if (_projects == null || _projects.Current == null)
-            {
-                GUILayout.Label(_status, _label);
-                GUILayout.EndArea();
-                return;
-            }
-
-            Project p = _projects.Current;
-            GUILayout.Label("Проект: " + p.Name + " (источник: " + p.Source + ")", _label);
-            GUILayout.Label("Помещений: " + p.Rooms.Count + "   Стен: " + p.Walls.Count + "   Объектов: " + p.Objects.Count, _label);
-            GUILayout.Label("Команд в истории: " + _commands.UndoCount, _label);
-            GUILayout.Label("▶ " + _status, _statusLabel);   // статус всегда виден над кнопками
-            if (p.Rooms.Count > 0)
-            {
-                MaterialRow("Пол", p.Rooms[0].Id, MaterialSlots.Floor);
-                MaterialRow("Потолок", p.Rooms[0].Id, MaterialSlots.Ceiling);
-            }
-            if (p.Walls.Count > 0) MaterialRow("Последняя стена", p.Walls[p.Walls.Count - 1].Id, MaterialSlots.Surface);
-            if (p.Objects.Count > 0) MaterialRow("Последний предмет", p.Objects[p.Objects.Count - 1].Id, MaterialSlots.Surface);
-            GUILayout.Space(6f);
-            _scroll = GUILayout.BeginScrollView(_scroll);
-
-            if (GUILayout.Button("Добавить стул", _button)) Run(AddChair);
-
-            GUI.enabled = p.Objects.Count > 0;
-            if (GUILayout.Button("Сдвинуть последний объект", _button)) Run(MoveLast);
-            if (GUILayout.Button("Удалить последний объект", _button)) Run(RemoveLast);
-            GUI.enabled = true;
-
-            GUILayout.Space(6f);
-            if (GUILayout.Button("Добавить перегородку", _button)) Run(AddPartition);
-            GUI.enabled = p.Walls.Count > 0;
-            if (GUILayout.Button("Добавить окно в последнюю стену", _button)) Run(AddWindowToLastWall);
-            if (GUILayout.Button("Добавить дверь в последнюю стену", _button)) Run(AddDoorToLastWall);
-            if (GUILayout.Button("Сдвинуть последнюю стену", _button)) Run(MoveLastWall);
-            if (GUILayout.Button("Удалить последнюю стену", _button)) Run(RemoveLastWall);
-            GUI.enabled = true;
-
-            GUILayout.Space(6f);
-            GUILayout.Label("Из каталога (с правилами размещения):", _label);
-            GUI.enabled = _catalog != null;
-            if (GUILayout.Button("Стул на пол", _button)) Run(() => PlaceDemo("chair_wood_01", DemoSpot.Random));
-            if (GUILayout.Button("Шкаф (прилипает к южной стене)", _button)) Run(() => PlaceDemo("wardrobe_01", DemoSpot.NearSouthWall));
-            if (GUILayout.Button("Диван (прилипает к северной стене)", _button)) Run(() => PlaceDemo("sofa_3seat_01", DemoSpot.NearNorthWall));
-            if (GUILayout.Button("Картина на восточную стену", _button)) Run(() => PlaceDemo("picture_wall_01", DemoSpot.NearEastWall));
-            if (GUILayout.Button("Потолочный светильник", _button)) Run(() => PlaceDemo("lamp_ceiling_01", DemoSpot.Center));
-            if (GUILayout.Button("Картина в центр (не получится: нет стены)", _button)) Run(() => PlaceDemo("picture_wall_01", DemoSpot.Center));
-            if (GUILayout.Button("Стул в центр (нажми дважды: будет пересечение)", _button)) Run(() => PlaceDemo("chair_wood_01", DemoSpot.Center));
-
-            GUILayout.Space(6f);
-            GUILayout.Label("Реальная геометрия (имитация скана):", _label);
-            if (GUILayout.Button(_fakeReality ? "Убрать «реальный стол»" : "Показать «реальный стол»", _button))
-                Run(() => { _fakeReality = !_fakeReality; Rebuild(); });
-            if (GUILayout.Button("Стул прямо на «реальный стол» (будет блокировка)", _button))
-                Run(() => PlaceDemo("chair_wood_01", DemoSpot.OnFakeTable));
-            GUI.enabled = true;
-
-            GUILayout.Space(8f);
-
-            GUILayout.Label("Редактирование выбранного (B-07):", _label);
-            GUI.enabled = _tools != null && p.Objects.Count > 0;
-            if (GUILayout.Button("Выбрать следующий предмет (жёлтый маркер)", _button))
-                Run(SelectNextObject);
-            GUI.enabled = _tools != null && _selection.HasSelection;
-            if (GUILayout.Button("Повернуть на 15°", _button))
-                Run(() => Report(_tools.RotateBy(_selection.SelectedId, 15f)));
-            if (GUILayout.Button("Сдвинуть на 0,25 м вправо", _button))
-                Run(() => MoveSelected(0.25f, 0f));
-            if (GUILayout.Button("Сдвинуть на 0,25 м вперёд", _button))
-                Run(() => MoveSelected(0f, 0.25f));
-            if (GUILayout.Button("Дублировать", _button))
-                Run(DuplicateSelected);
-            if (GUILayout.Button("Удалить выбранный", _button))
-                Run(() => Report(_tools.Delete(_selection.SelectedId)));
-            GUI.enabled = true;
-
-            GUILayout.Space(6f);
-            GUILayout.Label("Материалы (B-12):", _label);
-            GUI.enabled = _catalog != null && p.Rooms.Count > 0;
-            if (GUILayout.Button("Пол: дуб", _button))
-                Run(() => SetMaterial(p.Rooms[0].Id, MaterialSlots.Floor, "mat_wood_oak_01", "Пол: дуб."));
-            if (GUILayout.Button("Пол: тёмная плитка", _button))
-                Run(() => SetMaterial(p.Rooms[0].Id, MaterialSlots.Floor, "mat_tile_dark_01", "Пол: тёмная плитка."));
-            if (GUILayout.Button("Потолок: белый", _button))
-                Run(() => SetMaterial(p.Rooms[0].Id, MaterialSlots.Ceiling, "mat_ceiling_white_01", "Потолок: белый."));
-            if (GUILayout.Button("Все стены комнаты: синяя краска", _button))
-                Run(() => SetRoomWalls("mat_paint_blue_01", "Все стены комнаты: синяя краска."));
-            if (GUILayout.Button("Все стены комнаты: кирпич", _button))
-                Run(() => SetRoomWalls("mat_brick_01", "Все стены комнаты: кирпич."));
-            if (GUILayout.Button("Сбросить пол и стены к умолчанию", _button))
-                Run(ResetFloorAndWalls);
-            GUI.enabled = _catalog != null && p.Walls.Count > 0;
-            if (GUILayout.Button("Последняя стена: бетон", _button))
-                Run(() => SetMaterial(p.Walls[p.Walls.Count - 1].Id, MaterialSlots.Surface, "mat_concrete_01", "Последняя стена: бетон."));
-            if (GUILayout.Button("Ковёр на стену (будет отказ)", _button))
-                Run(() => SetMaterial(p.Walls[p.Walls.Count - 1].Id, MaterialSlots.Surface, "mat_carpet_grey_01", "Ковёр на стену."));
-            GUI.enabled = _catalog != null && p.Objects.Count > 0;
-            if (GUILayout.Button("Последний предмет: следующий допустимый материал", _button))
-                Run(CycleLastObjectMaterial);
-            GUI.enabled = true;
-
-            GUILayout.Space(8f);
-            GUI.enabled = _commands.CanUndo;
-            if (GUILayout.Button("Отменить: " + _commands.NextUndoName, _button)) Run(_commands.Undo);
-            GUI.enabled = _commands.CanRedo;
-            if (GUILayout.Button("Повторить: " + _commands.NextRedoName, _button)) Run(_commands.Redo);
-            GUI.enabled = true;
-
-            GUILayout.Space(8f);
-            if (GUILayout.Button("Сохранить и открыть заново", _button)) Run(ReopenFromDisk);
-
-            GUILayout.Space(8f);
-            GUILayout.EndScrollView();
-            GUILayout.EndArea();
-        }
-
-        private void EnsureStyles()
-        {
-            if (_label != null) return;
-            _label = new GUIStyle(GUI.skin.label) { fontSize = 14, wordWrap = true };
-            _label.normal.textColor = Color.white;
-            _statusLabel = new GUIStyle(_label) { fontStyle = FontStyle.Bold };
-            _statusLabel.normal.textColor = new Color(1f, 0.9f, 0.3f);
-            _button = new GUIStyle(GUI.skin.button) { fontSize = 14, fixedHeight = 28f };
-        }
-
-        private void Run(Action action)
-        {
-            try { action(); }
-            catch (Exception ex)
-            {
-                _status = "Ошибка: " + ex.Message;
-                Debug.LogError(ex);
-            }
-        }
-
-        private void AddChair()
-        {
-            Project p = _projects.Current;
-            float minX = 0f, maxX = 4f, minZ = 0f, maxZ = 3f;
-            if (p.Rooms.Count > 0)
-            {
-                minX = float.MaxValue; maxX = float.MinValue; minZ = float.MaxValue; maxZ = float.MinValue;
-                foreach (PlanPoint pt in p.Rooms[0].Boundary)
-                {
-                    minX = Mathf.Min(minX, pt.X); maxX = Mathf.Max(maxX, pt.X);
-                    minZ = Mathf.Min(minZ, pt.Z); maxZ = Mathf.Max(maxZ, pt.Z);
-                }
-            }
-
-            var chair = new PlacedObject
-            {
-                Id = IdGenerator.New("obj"),
-                CatalogId = "chair_demo",
-                Position = new Vec3(UnityEngine.Random.Range(minX + 0.5f, maxX - 0.5f), 0f,
-                                    UnityEngine.Random.Range(minZ + 0.5f, maxZ - 0.5f)),
-                Rotation = new Vec3(0f, UnityEngine.Random.Range(0, 24) * 15f, 0f)
-            };
-            _commands.Execute(new AddObjectCommand(chair, "Добавить стул"));
-            _status = "Добавлен стул.";
-        }
-
-        private void MoveLast()
-        {
-            Project p = _projects.Current;
-            PlacedObject o = p.Objects[p.Objects.Count - 1];
-            _commands.Execute(new SetObjectTransformCommand(o.Id,
-                new Vec3(o.Position.X + 0.5f, o.Position.Y, o.Position.Z), o.Rotation, o.Scale, "Сдвинуть объект"));
-            _status = "Объект сдвинут на 0,5 м.";
-        }
-
-        private void RemoveLast()
-        {
-            Project p = _projects.Current;
-            _commands.Execute(new RemoveObjectCommand(p.Objects[p.Objects.Count - 1].Id, "Удалить объект"));
-            _status = "Объект удалён.";
-        }
-
-        private void PlaceDemo(string catalogId, DemoSpot spot)
-        {
-            CatalogItem item = _catalog.GetItem(catalogId);
-            if (item == null) { _status = "В каталоге нет предмета " + catalogId + "."; return; }
-
-            Project p = _projects.Current;
-            float minX, maxX, minZ, maxZ;
-            GetBounds(p, out minX, out maxX, out minZ, out maxZ);
-            int floor = p.Rooms.Count > 0 ? p.Rooms[0].Floor : 1;
-
-            float rx = UnityEngine.Random.Range(minX + 1f, Mathf.Max(minX + 1f, maxX - 1f));
-            float rz = UnityEngine.Random.Range(minZ + 0.5f, Mathf.Max(minZ + 0.5f, maxZ - 0.5f));
-            PlanPoint target;
-            switch (spot)
-            {
-                case DemoSpot.NearSouthWall: target = new PlanPoint(rx, minZ + 0.6f); break;
-                case DemoSpot.NearNorthWall: target = new PlanPoint(rx, maxZ - 0.6f); break;
-                case DemoSpot.NearEastWall: target = new PlanPoint(maxX - 0.4f, rz); break;
-                case DemoSpot.Center: target = new PlanPoint((minX + maxX) / 2f, (minZ + maxZ) / 2f); break;
-                case DemoSpot.OnFakeTable: target = new PlanPoint(FakeReality.Center.x, FakeReality.Center.z); break;
-                default: target = new PlanPoint(rx, rz); break;
-            }
-
-            float yaw = UnityEngine.Random.Range(0, 24) * 15f;
-            // Привязка к сетке 0,05 м и повороту 15°
-            PlacementResult r = PlacementService.Place(p, item, target, yaw, floor, SnapSettings.Default);
-            if (!r.IsValid)
-            {
-                _status = "Не удалось поставить «" + item.Name + "»: " + r.Reason;
-                return;
-            }
-
-            CollisionReport report = CollisionService.Check(p, item, r, _catalog, _fakeReality ? _reality : null, floor);
-            if (report.HasBlocking)
-            {
-                _status = "Заблокировано: «" + item.Name + "». " + report.BlockingSummary;
-                return;
-            }
-
-            _commands.Execute(new AddObjectCommand(PlacementService.CreateObject(item, r), "Поставить: " + item.Name));
-            _status = "Поставлено: " + item.Name + (r.WallId != null ? " (у стены)." : ".");
-            if (report.HasCollisions) _status += " Предупреждение: " + report.Summary;
-        }
-
-        private static int FloorOf(Project p)
-        {
-            return p.Rooms.Count > 0 ? p.Rooms[0].Floor : 1;
-        }
-
-        private void GetBounds(Project p, out float minX, out float maxX, out float minZ, out float maxZ)
-        {
-            minX = 0f; maxX = 4f; minZ = 0f; maxZ = 3f;
-            if (p.Rooms.Count == 0) return;
-            minX = float.MaxValue; maxX = float.MinValue; minZ = float.MaxValue; maxZ = float.MinValue;
-            foreach (PlanPoint pt in p.Rooms[0].Boundary)
-            {
-                minX = Mathf.Min(minX, pt.X); maxX = Mathf.Max(maxX, pt.X);
-                minZ = Mathf.Min(minZ, pt.Z); maxZ = Mathf.Max(maxZ, pt.Z);
-            }
-        }
-
-        private void AddPartition()
-        {
-            Project p = _projects.Current;
-            float minX, maxX, minZ, maxZ;
-            GetBounds(p, out minX, out maxX, out minZ, out maxZ);
-
-            float x = UnityEngine.Random.Range(minX + 0.5f, maxX - 0.5f);
-            string roomId = p.Rooms.Count > 0 ? p.Rooms[0].Id : null;
-            float height = p.Rooms.Count > 0 ? p.Rooms[0].Height : 2.7f;
-
-            _commands.Execute(new AddWallCommand(new PlanPoint(x, minZ), new PlanPoint(x, maxZ),
-                height, 0.1f, roomId, ElementState.Proposed, "Добавить перегородку"));
-            _status = "Добавлена перегородка (зелёная).";
-        }
-
-        private void AddWindowToLastWall()
-        {
-            Project p = _projects.Current;
-            Wall w = p.Walls[p.Walls.Count - 1];
-            OpeningSize size = OpeningPresets.Window;
-            _commands.Execute(new AddOpeningCommand(w.Id, OpeningType.Window, 0.05f,
-                size.Width, size.Height, size.SillHeight, "mat_glass_01"));
-            _status = "Добавлено окно в начале последней стены.";
-        }
-
-        private void AddDoorToLastWall()
-        {
-            Project p = _projects.Current;
-            Wall w = p.Walls[p.Walls.Count - 1];
-            OpeningSize size = OpeningPresets.Door;
-            float offset = Mathf.Max(0f, WallRules.Length(w) - size.Width - 0.05f);
-            _commands.Execute(new AddOpeningCommand(w.Id, OpeningType.Door, offset,
-                size.Width, size.Height, size.SillHeight, "mat_door_01"));
-            _status = "Добавлена дверь в конце последней стены.";
-        }
-
-        private void MoveLastWall()
-        {
-            Project p = _projects.Current;
-            Wall w = p.Walls[p.Walls.Count - 1];
-            _commands.Execute(new MoveWallCommand(w.Id,
-                new PlanPoint(w.A.X + 0.5f, w.A.Z), new PlanPoint(w.B.X + 0.5f, w.B.Z), "Сдвинуть стену"));
-            _status = "Стена сдвинута на 0,5 м.";
-        }
-
-        private void RemoveLastWall()
-        {
-            Project p = _projects.Current;
-            _commands.Execute(new RemoveWallCommand(p.Walls[p.Walls.Count - 1].Id, "Удалить стену"));
-            _status = "Стена удалена вместе с её окнами и дверями.";
-        }
-
-        // ---------- редактирование выбранного (B-07) ----------
-
-        public void ApplyReality() { if (_tools != null) _tools.Reality = _fakeReality ? _reality : null; }
-
-        private void Report(ToolResult r)
-        {
-            _status = r.Message + (r.Warning != null ? " Предупреждение: " + r.Warning : "");
-        }
-
-        private void SelectNextObject()
-        {
-            string id = _selection.SelectNext(_projects.Current);
-            PlacedObject o = _projects.Current.Objects.Find(x => x.Id == id);
-            CatalogItem item = (o != null && _catalog != null) ? _catalog.GetItem(o.CatalogId) : null;
-            _status = "Выбран: " + (item != null ? item.Name : (o != null ? o.CatalogId : "ничего")) + " (" + id + ").";
-            Rebuild();
-        }
-
-        private void MoveSelected(float dx, float dz)
-        {
-            ApplyReality();
-            PlacedObject o = _projects.Current.Objects.Find(x => x.Id == _selection.SelectedId);
-            if (o == null) return;
-            Report(_tools.MoveTo(o.Id, new PlanPoint(o.Position.X + dx, o.Position.Z + dz)));
-        }
-
-        private void DuplicateSelected()
-        {
-            ApplyReality();
-            ToolResult r = _tools.Duplicate(_selection.SelectedId);
-            Report(r);
-            if (r.Success) { _selection.Select(r.ObjectId); Rebuild(); }
-        }
-
-        // ---------- материалы (B-12) ----------
-
-        private void MaterialRow(string title, string targetId, string slot)
-        {
-            string id = MaterialRules.GetMaterialId(_projects.Current, targetId, slot);
-            MaterialInfo info = (id != null && _catalog != null) ? _catalog.GetMaterial(id) : null;
-            string text = id == null ? "по умолчанию" : (info != null ? info.Name : id);
-
-            GUILayout.BeginHorizontal();
-            Rect swatch = GUILayoutUtility.GetRect(18f, 18f, GUILayout.Width(18f), GUILayout.Height(18f));
-            Color old = GUI.color;
-            GUI.color = id == null ? new Color(0.5f, 0.5f, 0.5f) : MaterialColor(id);
-            GUI.DrawTexture(swatch, Texture2D.whiteTexture);
-            GUI.color = old;
-            GUILayout.Label(title + ": " + text, _label);
-            GUILayout.EndHorizontal();
-        }
-
-        private void SetMaterial(string targetId, string slot, string materialId, string okText)
-        {
-            _commands.Execute(new SetMaterialCommand(targetId, slot, materialId, _catalog));
-            _status = okText;
-        }
-
-        private void SetRoomWalls(string materialId, string okText)
-        {
-            Project p = _projects.Current;
-            _commands.Execute(MaterialCommands.ApplyToRoomWalls(p, p.Rooms[0].Id, materialId, _catalog));
-            _status = okText;
-        }
-
-        private void ResetFloorAndWalls()
-        {
-            Project p = _projects.Current;
-            var commands = new List<ICommand>();
-            commands.Add(new SetMaterialCommand(p.Rooms[0].Id, MaterialSlots.Floor, null, _catalog));
-            foreach (Wall w in p.Walls)
-                if (w.RoomId == p.Rooms[0].Id)
-                    commands.Add(new SetMaterialCommand(w.Id, MaterialSlots.Surface, null, _catalog));
-            _commands.Execute(new CompositeCommand("Сбросить материалы", commands));
-            _status = "Материалы пола и стен сброшены.";
-        }
-
-        private void CycleLastObjectMaterial()
-        {
-            Project p = _projects.Current;
-            PlacedObject o = p.Objects[p.Objects.Count - 1];
-            IReadOnlyList<MaterialInfo> allowed =
-                MaterialRules.GetAllowedMaterials(p, _catalog, o.Id, MaterialSlots.Surface);
-            if (allowed.Count == 0)
-            {
-                _status = "Для этого предмета материал менять нельзя (в каталоге нет допустимых). " +
-                          "Попробуй предмет из блока «Из каталога», например стул или шкаф.";
-                return;
-            }
-
-            string current = MaterialRules.GetMaterialId(p, o.Id, MaterialSlots.Surface);
-            int index = -1;
-            for (int i = 0; i < allowed.Count; i++)
-                if (allowed[i].Id == current) index = i;
-            MaterialInfo next = allowed[(index + 1) % allowed.Count];
-
-            _commands.Execute(new SetMaterialCommand(o.Id, MaterialSlots.Surface, next.Id, _catalog));
-            _status = "Материал предмета: " + next.Name + ".";
-        }
-
-        private void ReopenFromDisk()
-        {
-            _projects.Save();
-            string id = _projects.Current.Id;
-
-            _projects = new ProjectService(new ProjectStorage(_storageDir));
-            _projects.Load(id);
-            AttachCommands();
-            Rebuild();
-
-            _status = "Проект записан на диск и открыт заново. Объектов: " + _projects.Current.Objects.Count + ".";
         }
     }
 }
