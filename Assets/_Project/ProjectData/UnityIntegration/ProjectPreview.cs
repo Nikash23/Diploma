@@ -67,6 +67,72 @@ namespace XrInterior.ProjectData.UnityIntegration
         private readonly FakeReality _reality = new FakeReality();
         private GameObject _viewRoot;
         private bool _framed;
+
+        // ---- Доступ для надстроек (например, XR-слоя XrEditorBridge). Здесь нет зависимостей от XR-пакетов. ----
+
+        /// <summary>false - не двигать камеру сцены (нужно, когда в сцене есть XR-риг).</summary>
+        public bool frameCamera = true;
+
+        /// <summary>Пока значение больше нуля, сцена не перестраивается (например, предмет в руке).</summary>
+        public int RebuildHolds { get; set; }
+
+        public ProjectService Projects { get { return _projects; } }
+        public CommandService Commands { get { return _commands; } }
+        public CatalogService Catalog { get { return _catalog; } }
+        public EditorTools Tools { get { return _tools; } }
+        public EditorSelection Selection { get { return _selection; } }
+        public Transform ViewRoot { get { return _viewRoot != null ? _viewRoot.transform : null; } }
+        public string Status { get { return _status; } set { _status = value; } }
+
+        /// <summary>Вызывается для каждого нарисованного предмета: корень стоит в точке привязки, форма и коллайдер внутри.</summary>
+        public event Action<GameObject, PlacedObject> ObjectViewBuilt;
+
+        /// <summary>Вызывается после каждой перерисовки сцены.</summary>
+        public event Action ViewRebuilt;
+
+        private bool _dirty;
+        private readonly Dictionary<string, GameObject> _markers = new Dictionary<string, GameObject>();
+
+        /// <summary>Просит перерисовать сцену при первой возможности (когда нет удержаний).</summary>
+        public void RequestRebuild() { _dirty = true; }
+
+        public float RoomElevation
+        {
+            get
+            {
+                Project p = _projects != null ? _projects.Current : null;
+                return p != null && p.Rooms.Count > 0 ? p.Rooms[0].Elevation : 0f;
+            }
+        }
+
+        public bool TryGetRoomBounds(out float minX, out float maxX, out float minZ, out float maxZ)
+        {
+            minX = 0f; maxX = 4f; minZ = 0f; maxZ = 3f;
+            Project p = _projects != null ? _projects.Current : null;
+            if (p == null || p.Rooms.Count == 0) return false;
+            GetBounds(p, out minX, out maxX, out minZ, out maxZ);
+            return true;
+        }
+
+        private void Awake()
+        {
+            _selection.SelectionChanged += OnSelectionChanged;
+        }
+
+        private void Update()
+        {
+            if (_dirty && RebuildHolds <= 0 && _projects != null && _projects.Current != null)
+            {
+                _dirty = false;
+                Rebuild();
+            }
+        }
+
+        private void OnSelectionChanged(string id)
+        {
+            foreach (KeyValuePair<string, GameObject> m in _markers)
+                if (m.Value != null) m.Value.SetActive(m.Key == id);
+        }
         private string _status = "";
         private GUIStyle _label;
         private GUIStyle _button;
@@ -189,6 +255,8 @@ namespace XrInterior.ProjectData.UnityIntegration
 
         private void Rebuild()
         {
+            if (RebuildHolds > 0) { _dirty = true; return; }
+            _markers.Clear();
             if (_viewRoot != null) Destroy(_viewRoot);
             _viewRoot = new GameObject("Предпросмотр");
             _viewRoot.transform.SetParent(transform, false);
@@ -221,7 +289,8 @@ namespace XrInterior.ProjectData.UnityIntegration
                 Box("Реальный стол (имитация)", FakeReality.Center, FakeReality.Size, Quaternion.identity,
                     new Color(0.5f, 0.5f, 0.55f));
 
-            if (!_framed && p.Rooms.Count > 0) FrameCamera(minX, maxX, minZ, maxZ);
+            if (frameCamera && !_framed && p.Rooms.Count > 0) FrameCamera(minX, maxX, minZ, maxZ);
+            if (ViewRebuilt != null) ViewRebuilt();
         }
 
         private static float BaseY(Wall w, Dictionary<string, Room> rooms)
@@ -299,10 +368,32 @@ namespace XrInterior.ProjectData.UnityIntegration
             string objectMaterial = MaterialRules.GetMaterialId(_projects.Current, o.Id, MaterialSlots.Surface);
             if (objectMaterial != null) baseColor = MaterialColor(objectMaterial);
             Color color = collides ? new Color(0.95f, 0.2f, 0.2f) : baseColor;
-            Box("Объект " + label + (collides ? " [пересечение]" : "") + " (" + o.Id + ")", pos, size, rot, color);
-            if (o.Id == _selection.SelectedId)
-                Box("Выбран", pos + Vector3.up * (size.y / 2f + 0.25f), new Vector3(0.15f, 0.15f, 0.15f),
-                    Quaternion.identity, new Color(1f, 0.9f, 0.1f));
+
+            // Корень стоит ровно в точке привязки предмета (к нему крепится хват в VR), форма смещена внутри.
+            var root = new GameObject("Объект " + label + (collides ? " [пересечение]" : "") + " (" + o.Id + ")");
+            root.transform.SetParent(_viewRoot.transform, false);
+            root.transform.localPosition = new Vector3(o.Position.X, o.Position.Y, o.Position.Z);
+            root.transform.localRotation = rot;
+
+            GameObject body = GameObject.CreatePrimitive(PrimitiveType.Cube);   // коллайдер оставляем: за него берётся хват
+            body.name = "Форма";
+            body.transform.SetParent(root.transform, false);
+            body.transform.localPosition = localCenter;
+            body.transform.localScale = size;
+            body.GetComponent<Renderer>().material.color = color;
+
+            // Жёлтый маркер над выбранным предметом (едет вместе с ним).
+            GameObject marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            marker.name = "Выбран";
+            DestroyImmediate(marker.GetComponent<Collider>());   // сразу, чтобы хват не увидел лишний коллайдер
+            marker.transform.SetParent(root.transform, false);
+            marker.transform.localPosition = localCenter + Vector3.up * (size.y / 2f + 0.25f);
+            marker.transform.localScale = Vector3.one * 0.15f;
+            marker.GetComponent<Renderer>().material.color = new Color(1f, 0.9f, 0.1f);
+            marker.SetActive(o.Id == _selection.SelectedId);
+            _markers[o.Id] = marker;
+
+            if (ObjectViewBuilt != null) ObjectViewBuilt(root, o);
         }
 
         private void DrawLight(ProjectLight l)
@@ -359,6 +450,7 @@ namespace XrInterior.ProjectData.UnityIntegration
             go.transform.localScale = Vector3.one;
             Destroy(go.GetComponent<Collider>());
             go.GetComponent<MeshFilter>().sharedMesh = mesh;
+            go.AddComponent<MeshCollider>().sharedMesh = mesh;   // твёрдый пол: на нём стоит XR-риг
             string floorMaterial = MaterialRules.GetMaterialId(_projects.Current, r.Id, MaterialSlots.Floor);
             go.GetComponent<Renderer>().material.color =
                 floorMaterial != null ? MaterialColor(floorMaterial) : new Color(0.40f, 0.40f, 0.46f);
@@ -751,7 +843,7 @@ namespace XrInterior.ProjectData.UnityIntegration
 
         // ---------- редактирование выбранного (B-07) ----------
 
-        private void ApplyReality() { if (_tools != null) _tools.Reality = _fakeReality ? _reality : null; }
+        public void ApplyReality() { if (_tools != null) _tools.Reality = _fakeReality ? _reality : null; }
 
         private void Report(ToolResult r)
         {
