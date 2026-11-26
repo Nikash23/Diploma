@@ -45,6 +45,16 @@ namespace XrInterior.ProjectData
         /// <summary>Шаг перемещения кнопками, метры.</summary>
         public const float MoveStep = 0.25f;
 
+        /// <summary>Шаг изменения длины стены, метры.</summary>
+        public const float LengthStep = 0.25f;
+
+        /// <summary>Шаг изменения толщины стены, метры.</summary>
+        public const float ThicknessStep = 0.05f;
+
+        public const float MinWallLength = 0.5f;
+        public const float MinWallThickness = 0.05f;
+        public const float MaxWallThickness = 0.5f;
+
         /// <summary>Поворот стены, градусы.</summary>
         public const float WallRotationStep = 90f;
 
@@ -344,13 +354,63 @@ namespace XrInterior.ProjectData
             return MoveTo(objectId, new PlanPoint(obj.Position.X, obj.Position.Z), current + dy);
         }
 
+        private const string MainWallMessage = "Основные стены комнаты менять нельзя: их можно только выбрать, покрасить и добавить окно или дверь.";
+
         private ToolResult MoveWall(Wall wall, float dx, float dz)
         {
+            if (WallPlacement.IsRoomBoundaryWall(_projects.Current, wall)) return ToolResult.Fail(MainWallMessage);
             PlanPoint a = new PlanPoint(GridSnap.Snap(wall.A.X + dx, _snap.PositionStep), GridSnap.Snap(wall.A.Z + dz, _snap.PositionStep));
             PlanPoint b = new PlanPoint(GridSnap.Snap(wall.B.X + dx, _snap.PositionStep), GridSnap.Snap(wall.B.Z + dz, _snap.PositionStep));
             string error = Exec(new MoveWallCommand(wall.Id, a, b, "Сдвинуть стену"));
             if (error != null) return ToolResult.Fail("Не удалось сдвинуть стену: " + error);
             return ToolResult.Ok("Стена сдвинута.");
+        }
+
+        // =====================================================================
+        // Размер стены
+        // =====================================================================
+
+        /// <summary>
+        /// Меняет длину (конец B отодвигается или приближается к A, начало A стоит на месте) и толщину стены.
+        /// Окна и двери остаются на своих местах, поэтому стену нельзя укоротить так, чтобы они вылезли за её конец.
+        /// </summary>
+        public ToolResult ResizeWall(string wallId, float deltaLength, float deltaThickness)
+        {
+            Project p = _projects.Current;
+            if (p == null) return ToolResult.Fail("Нет открытого проекта.");
+            Wall wall = p.Walls.Find(w => w.Id == wallId);
+            if (wall == null) return ToolResult.Fail("Сначала выберите стену.");
+            if (WallPlacement.IsRoomBoundaryWall(p, wall)) return ToolResult.Fail(MainWallMessage);
+
+            float step = _snap.PositionStep;
+            float length = WallRules.Length(wall);
+            if (length < 1e-4f) return ToolResult.Fail("У стены нулевая длина.");
+
+            float newLength = GridSnap.Snap(length + deltaLength, step);
+            float newThickness = GridSnap.Snap(wall.Thickness + deltaThickness, step);
+            newThickness = Math.Max(MinWallThickness, Math.Min(MaxWallThickness, newThickness));
+
+            if (deltaLength != 0f)
+            {
+                if (newLength < MinWallLength) return ToolResult.Fail("Стена не может быть короче " + MinWallLength.ToString("0.0#") + " м.");
+                float occupied = 0f;
+                foreach (Opening o in WallRules.OpeningsOf(p, wall.Id)) occupied = Math.Max(occupied, o.Offset + o.Width);
+                if (newLength < occupied - 0.0001f) return ToolResult.Fail("Короче нельзя: мешают окно или дверь.");
+            }
+            else newLength = length;
+
+            if (deltaThickness != 0f && Math.Abs(newThickness - wall.Thickness) < 0.0001f)
+                return ToolResult.Fail("Толщина стены ограничена: " + MinWallThickness.ToString("0.00") + "-" + MaxWallThickness.ToString("0.00") + " м.");
+
+            float ux = (wall.B.X - wall.A.X) / length, uz = (wall.B.Z - wall.A.Z) / length;
+            PlanPoint newB = deltaLength != 0f
+                ? new PlanPoint(GridSnap.Snap(wall.A.X + ux * newLength, step), GridSnap.Snap(wall.A.Z + uz * newLength, step))
+                : wall.B;
+
+            string error = Exec(new ResizeWallCommand(wall.Id, wall.A, newB, newThickness, "Изменить стену"));
+            if (error != null) return ToolResult.Fail("Не удалось изменить стену: " + error);
+            return ToolResult.Ok("Стена: длина " + WallRules.Length(wall).ToString("0.00") + " м, толщина "
+                + wall.Thickness.ToString("0.00") + " м.");
         }
 
         // =====================================================================
@@ -391,6 +451,7 @@ namespace XrInterior.ProjectData
 
         private ToolResult RotateWall(Wall wall, float degrees)
         {
+            if (WallPlacement.IsRoomBoundaryWall(_projects.Current, wall)) return ToolResult.Fail(MainWallMessage);
             float step = _snap.PositionStep;
             float mx = GridSnap.Snap((wall.A.X + wall.B.X) / 2f, step);
             float mz = GridSnap.Snap((wall.A.Z + wall.B.Z) / 2f, step);
@@ -430,6 +491,7 @@ namespace XrInterior.ProjectData
             Wall wall = p.Walls.Find(w => w.Id == id);
             if (wall != null)
             {
+                if (WallPlacement.IsRoomBoundaryWall(p, wall)) return ToolResult.Fail(MainWallMessage);
                 string error = Exec(new RemoveWallCommand(wall.Id, "Удалить стену"));
                 if (error != null) return ToolResult.Fail("Не удалось удалить стену: " + error);
                 return ToolResult.Ok("Стена удалена вместе с её окнами и дверями.");

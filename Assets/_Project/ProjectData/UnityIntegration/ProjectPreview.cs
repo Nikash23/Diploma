@@ -124,6 +124,9 @@ namespace XrInterior.ProjectData.UnityIntegration
         /// <summary>Вызывается для каждого нарисованного предмета: корень стоит в точке привязки, форма и коллайдер внутри.</summary>
         public event Action<GameObject, PlacedObject> ObjectViewBuilt;
 
+        /// <summary>Вызывается для каждой нарисованной стены: корень в середине стены, форма и коллайдер внутри.</summary>
+        public event Action<GameObject, Wall> WallViewBuilt;
+
         /// <summary>Вызывается после каждой перерисовки сцены.</summary>
         public event Action ViewRebuilt;
 
@@ -356,13 +359,7 @@ namespace XrInterior.ProjectData.UnityIntegration
                     minZ = Mathf.Min(minZ, pt.Z); maxZ = Mathf.Max(maxZ, pt.Z);
                 }
             }
-            foreach (Wall w in p.Walls)
-            {
-                float baseY = BaseY(w, rooms);
-                DrawWall(w, baseY);
-                MakeMarker(w.Id, _viewRoot.transform,
-                    new Vector3((w.A.X + w.B.X) / 2f, baseY + w.Height + 0.3f, (w.A.Z + w.B.Z) / 2f), 0.22f);
-            }
+            foreach (Wall w in p.Walls) DrawWall(w, BaseY(w, rooms));
             foreach (Opening o in p.Openings) DrawOpening(o, walls, rooms);
             foreach (PlacedObject o in p.Objects) DrawObject(o);
             foreach (ProjectLight l in p.Lights) DrawLight(l);
@@ -397,6 +394,8 @@ namespace XrInterior.ProjectData.UnityIntegration
             return marker;
         }
 
+        // Стена: корень стоит в середине стены на уровне 0 и повёрнут вдоль неё (к нему крепится хват в VR),
+        // форма с коллайдером и жёлтый маркер выбора лежат внутри.
         private void DrawWall(Wall w, float baseY)
         {
             Vector3 a = new Vector3(w.A.X, 0f, w.A.Z);
@@ -406,11 +405,30 @@ namespace XrInterior.ProjectData.UnityIntegration
             if (len < 0.001f) return;
 
             float yaw = Mathf.Atan2(-d.z, d.x) * Mathf.Rad2Deg;
-            Vector3 center = (a + b) / 2f + Vector3.up * (baseY + w.Height / 2f);
             Color color = w.State == ElementState.Existing ? new Color(0.85f, 0.80f, 0.70f) : new Color(0.55f, 0.85f, 0.55f);
             string wallMaterial = MaterialRules.GetMaterialId(_projects.Current, w.Id, MaterialSlots.Surface);
             if (wallMaterial != null) color = MaterialColor(wallMaterial);
-            Box("Стена " + w.Id, center, new Vector3(len + w.Thickness, w.Height, w.Thickness), Quaternion.Euler(0f, yaw, 0f), color);
+
+            var root = new GameObject("Стена " + w.Id);
+            root.transform.SetParent(_viewRoot.transform, false);
+            root.transform.localPosition = (a + b) / 2f;
+            root.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
+
+            GameObject body = GameObject.CreatePrimitive(PrimitiveType.Cube);   // коллайдер оставляем: за него берётся луч
+            body.name = "Форма";
+            body.transform.SetParent(root.transform, false);
+            body.transform.localPosition = new Vector3(0f, baseY + w.Height / 2f, 0f);
+            body.transform.localScale = new Vector3(len + w.Thickness, w.Height, w.Thickness);
+            body.GetComponent<Renderer>().material.color = color;
+
+            // Стена не твёрдая: игрок проходит сквозь неё, как и раньше. Коллайдер-триггер нужен только лучу выбора.
+            body.GetComponent<Collider>().isTrigger = true;
+
+            // Жёлтая метка выбора прямо на стене (видна с обеих сторон), на середине высоты.
+            GameObject plate = MakeMarker(w.Id, root.transform, new Vector3(0f, baseY + Mathf.Min(1.4f, w.Height / 2f), 0f), 1f);
+            plate.transform.localScale = new Vector3(0.45f, 0.45f, w.Thickness + 0.08f);
+
+            if (WallViewBuilt != null) WallViewBuilt(root, w);
         }
 
         private void DrawOpening(Opening o, Dictionary<string, Wall> walls, Dictionary<string, Room> rooms)
@@ -636,6 +654,7 @@ namespace XrInterior.ProjectData.UnityIntegration
             public Color SelectionColor = Color.gray;
             public bool IsWallItem;
             public bool WallInRoom;
+            public bool WallIsMain;
             public string MaterialTitle = "";
             public bool CanResetMaterial;
             public List<SwatchUi> Swatches = new List<SwatchUi>();
@@ -711,7 +730,8 @@ namespace XrInterior.ProjectData.UnityIntegration
                     case SelectionKind.Wall:
                     {
                         Wall w = p.Walls.Find(x => x.Id == target);
-                        ui.SelectionLabel = "Стена" + (w != null ? " (" + WallRules.Length(w).ToString("0.0") + " м)" : "");
+                        ui.WallIsMain = WallPlacement.IsRoomBoundaryWall(p, w);
+                        ui.SelectionLabel = (ui.WallIsMain ? "Основная стена" : "Стена") + (w != null ? " (" + WallRules.Length(w).ToString("0.00") + " м, толщина " + w.Thickness.ToString("0.00") + " м)" : "");
                         ui.WallInRoom = w != null && w.RoomId != null;
                         ui.MaterialTitle = "материал стены";
                         break;
@@ -920,7 +940,17 @@ namespace XrInterior.ProjectData.UnityIntegration
                 return;
             }
 
-            bool movable = ui.Kind == SelectionKind.Object || ui.Kind == SelectionKind.Wall;
+            bool mainWall = ui.Kind == SelectionKind.Wall && ui.WallIsMain;
+            if (mainWall)
+            {
+                GUILayout.Label("Основную стену комнаты двигать, крутить и удалять нельзя. Можно покрасить и добавить окно или дверь.", _label);
+                GUILayout.BeginHorizontal();
+                Btn("Добавить окно", () => AddOpeningToSelected(OpeningType.Window));
+                Btn("Добавить дверь", () => AddOpeningToSelected(OpeningType.Door));
+                GUILayout.EndHorizontal();
+            }
+
+            bool movable = (ui.Kind == SelectionKind.Object || ui.Kind == SelectionKind.Wall) && !mainWall;
             if (movable)
             {
                 if (ui.IsWallItem)
@@ -950,6 +980,15 @@ namespace XrInterior.ProjectData.UnityIntegration
 
                 if (ui.Kind == SelectionKind.Wall)
                 {
+                    GUILayout.Label("Размер стены (длина меняется с конца стены):", _label);
+                    GUILayout.BeginHorizontal();
+                    Btn("Длиннее +0,25 м", () => ResizeSelected(EditorTools.LengthStep, 0f));
+                    Btn("Короче -0,25 м", () => ResizeSelected(-EditorTools.LengthStep, 0f));
+                    GUILayout.EndHorizontal();
+                    GUILayout.BeginHorizontal();
+                    Btn("Толще +0,05 м", () => ResizeSelected(0f, EditorTools.ThicknessStep));
+                    Btn("Тоньше -0,05 м", () => ResizeSelected(0f, -EditorTools.ThicknessStep));
+                    GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     Btn("Повернуть -90°", () => RotateSelected(-EditorTools.WallRotationStep));
                     Btn("Повернуть +90°", () => RotateSelected(EditorTools.WallRotationStep));
@@ -1165,6 +1204,12 @@ namespace XrInterior.ProjectData.UnityIntegration
         {
             if (!ToolsReady() || !_selection.HasSelection) return;
             Report(_tools.RaiseBy(_selection.SelectedId, meters));
+        }
+
+        private void ResizeSelected(float deltaLength, float deltaThickness)
+        {
+            if (!ToolsReady() || !_selection.HasSelection) return;
+            Report(_tools.ResizeWall(_selection.SelectedId, deltaLength, deltaThickness));
         }
 
         private void RotateSelected(float degrees)

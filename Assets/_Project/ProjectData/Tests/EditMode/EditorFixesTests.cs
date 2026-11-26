@@ -519,6 +519,139 @@ namespace XrInterior.ProjectData.Tests
             Assert.IsFalse(_tools.Delete("нет").Success);
         }
 
+        // ---------- длина и толщина стены ----------
+
+        [Test]
+        public void ResizeWall_Longer_MovesEndB_KeepsStartA_AndUndoRestores()
+        {
+            Wall w = AddPartition();
+            float ax = w.A.X, az = w.A.Z, length = WallRules.Length(w);
+
+            ToolResult r = _tools.ResizeWall(w.Id, EditorTools.LengthStep, 0f);
+
+            Assert.IsTrue(r.Success, r.Message);
+            Wall after = WallById(w.Id);
+            Assert.AreEqual(ax, after.A.X, 0.001f);
+            Assert.AreEqual(az, after.A.Z, 0.001f);
+            Assert.AreEqual(length + 0.25f, WallRules.Length(after), 0.051f);
+
+            _commands.Undo();
+            Assert.AreEqual(length, WallRules.Length(WallById(w.Id)), 0.001f);
+        }
+
+        [Test]
+        public void ResizeWall_Shorter_ReducesLength()
+        {
+            Wall w = AddPartition();
+            float length = WallRules.Length(w);
+
+            Assert.IsTrue(_tools.ResizeWall(w.Id, -EditorTools.LengthStep, 0f).Success);
+
+            Assert.AreEqual(length - 0.25f, WallRules.Length(WallById(w.Id)), 0.051f);
+        }
+
+        [Test]
+        public void ResizeWall_TooShort_IsRefused()
+        {
+            Wall w = AddPartition();
+            for (int i = 0; i < 20; i++) _tools.ResizeWall(w.Id, -EditorTools.LengthStep, 0f);
+
+            Assert.GreaterOrEqual(WallRules.Length(WallById(w.Id)), EditorTools.MinWallLength - 0.001f);
+            Assert.IsFalse(_tools.ResizeWall(w.Id, -EditorTools.LengthStep, 0f).Success);
+        }
+
+        [Test]
+        public void ResizeWall_CannotCutOffWindow()
+        {
+            Wall w = AddPartition();
+            Assert.IsTrue(_tools.AddOpening(w.Id, OpeningType.Window).Success);
+            Opening o = new List<Opening>(WallRules.OpeningsOf(_project, w.Id))[0];
+            float length = WallRules.Length(WallById(w.Id));
+            float need = o.Offset + o.Width;
+
+            // Пока окно помещается, можно укорачивать; дальше - отказ.
+            ToolResult last = null;
+            for (int i = 0; i < 20; i++)
+            {
+                last = _tools.ResizeWall(w.Id, -EditorTools.LengthStep, 0f);
+                if (!last.Success) break;
+            }
+            Assert.IsFalse(last.Success);
+            Assert.GreaterOrEqual(WallRules.Length(WallById(w.Id)), need - 0.001f);
+            Assert.LessOrEqual(WallRules.Length(WallById(w.Id)), length);
+        }
+
+        [Test]
+        public void ResizeWall_Thickness_ChangesByStep_WithinLimits_AndUndoRestores()
+        {
+            Wall w = AddPartition();
+            float t0 = w.Thickness;
+
+            Assert.IsTrue(_tools.ResizeWall(w.Id, 0f, EditorTools.ThicknessStep).Success);
+            Assert.AreEqual(t0 + 0.05f, WallById(w.Id).Thickness, 0.011f);
+            _commands.Undo();
+            Assert.AreEqual(t0, WallById(w.Id).Thickness, 0.001f);
+
+            for (int i = 0; i < 20; i++) _tools.ResizeWall(w.Id, 0f, EditorTools.ThicknessStep);
+            Assert.LessOrEqual(WallById(w.Id).Thickness, EditorTools.MaxWallThickness + 0.001f);
+            Assert.IsFalse(_tools.ResizeWall(w.Id, 0f, EditorTools.ThicknessStep).Success);
+        }
+
+        [Test]
+        public void ResizeWall_UnknownWall_Fails()
+        {
+            Assert.IsFalse(_tools.ResizeWall("нет", 0.25f, 0f).Success);
+        }
+
+        // ---------- основные стены комнаты неприкосновенны ----------
+
+        [Test]
+        public void MainWalls_AreRecognised_PartitionIsNot()
+        {
+            foreach (Wall w in _project.Walls)
+                Assert.IsTrue(WallPlacement.IsRoomBoundaryWall(_project, w), "стена комнаты должна считаться основной");
+            Assert.IsFalse(WallPlacement.IsRoomBoundaryWall(_project, AddPartition()));
+        }
+
+        [Test]
+        public void MainWalls_AreRecognised_InLShapedRoom()
+        {
+            Open(RoomTemplate.LShaped, new Dictionary<string, float>
+            {
+                { TemplateParam.Width, 10f }, { TemplateParam.Depth, 8f },
+                { TemplateParam.CutWidth, 4f }, { TemplateParam.CutDepth, 3f }
+            });
+            foreach (Wall w in _project.Walls)
+                Assert.IsTrue(WallPlacement.IsRoomBoundaryWall(_project, w));
+        }
+
+        [Test]
+        public void MainWall_CannotBeMovedRotatedResizedOrDeleted()
+        {
+            Wall main = _project.Walls[0];
+            float ax = main.A.X, az = main.A.Z;
+            int count = _project.Walls.Count;
+            int undo = _commands.UndoCount;
+
+            Assert.IsFalse(_tools.MoveBy(main.Id, 0.25f, 0f).Success);
+            Assert.IsFalse(_tools.RotateBy(main.Id, 90f).Success);
+            Assert.IsFalse(_tools.ResizeWall(main.Id, 0.25f, 0f).Success);
+            Assert.IsFalse(_tools.ResizeWall(main.Id, 0f, 0.05f).Success);
+            Assert.IsFalse(_tools.Delete(main.Id).Success);
+
+            Assert.AreEqual(ax, WallById(main.Id).A.X, 0.0001f);
+            Assert.AreEqual(az, WallById(main.Id).A.Z, 0.0001f);
+            Assert.AreEqual(count, _project.Walls.Count);
+            Assert.AreEqual(undo, _commands.UndoCount, "отказ не должен попадать в историю");
+        }
+
+        [Test]
+        public void MainWall_CanStillHaveOpeningAndMaterial()
+        {
+            Wall main = _project.Walls[0];
+            Assert.IsTrue(_tools.AddOpening(main.Id, OpeningType.Window).Success);
+        }
+
         // ---------- выбор: предмет, стена, пол, потолок ----------
 
         [Test]

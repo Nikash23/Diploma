@@ -106,6 +106,32 @@ namespace XrInterior.ProjectData
             };
         }
 
+        /// <summary>Допуск совпадения стены с границей помещения, метры (больше половины толщины обычной стены).</summary>
+        public const float BoundaryTolerance = 0.2f;
+
+        /// <summary>
+        /// Основная стена: оба её конца лежат на одной стороне контура какого-либо помещения.
+        /// Такие стены создаёт шаблон комнаты, их нельзя двигать, крутить, менять и удалять (только красить и добавлять окна и двери).
+        /// Перегородки внутри комнаты - не основные.
+        /// </summary>
+        public static bool IsRoomBoundaryWall(Project project, Wall wall)
+        {
+            if (project == null || wall == null) return false;
+            foreach (Room r in project.Rooms)
+            {
+                int n = r.Boundary.Count;
+                for (int i = 0; i < n; i++)
+                {
+                    PlanPoint a = r.Boundary[i], b = r.Boundary[(i + 1) % n];
+                    float along;
+                    if (PlanGeometry.DistanceToSegment(wall.A, a, b, out along) <= BoundaryTolerance
+                        && PlanGeometry.DistanceToSegment(wall.B, a, b, out along) <= BoundaryTolerance)
+                        return true;
+                }
+            }
+            return false;
+        }
+
         /// <summary>Находит стену, на которой висит предмет (ближайшая к нему стена, вплотную). null, если такой нет.</summary>
         public static Wall FindWallOf(Project project, PlacedObject obj, int floor)
         {

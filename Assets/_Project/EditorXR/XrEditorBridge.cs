@@ -1,14 +1,15 @@
 // XR-надстройка над ProjectPreview (B-07, часть 2, FR-103, FR-113).
 // ProjectPreview рисует проект и выполняет все действия, он не знает про XR. Этот компонент добавляет только то,
-// что зависит от XR Interaction Toolkit: хват предмета лучом контроллера, кнопки контроллеров и клавиши 1-7
-// (для проверки без гарнитуры), постановку XR-рига в комнату и подсказку перед глазами.
-// Кнопки контроллеров: A - повернуть, B - копия, клик правого стика - удалить, X - отмена, клик левого стика - повтор.
-// (Кнопка Y не используется: в Starter Assets она открывает обучение.)
+// что зависит от XR Interaction Toolkit: хват предметов и добавленных стен лучом контроллера (выбор и перемещение),
+// выбор основных стен лучом (их можно выбрать и покрасить, но не двигать),
+// постановку XR-рига в комнату и точку, возле которой появляются новые предметы.
+// Управления с клавиатуры и кнопок контроллеров здесь нет: все действия - в меню ProjectPreview.
+// Кнопки Touch-контроллеров добавим, когда будет гарнитура.
 // Все изменения проекта выполняют EditorTools и команды (undo/redo): здесь правил нет.
 
 using System;
+using System.Reflection;
 using UnityEngine;
-using UnityEngine.InputSystem;
 using UnityEngine.XR.Interaction.Toolkit;
 using UnityEngine.XR.Interaction.Toolkit.Interactables;
 using XrInterior.ProjectData;
@@ -24,20 +25,8 @@ namespace XrInterior.EditorXR
         [Header("XR-риг: перетащить сюда объект XR Origin (XR Rig)")]
         public Transform xrOrigin;
 
-        [Header("Подсказка перед глазами: если текст слишком крупный или мелкий, меняйте это число")]
-        public float hudScale = 0.05f;
-
         private ProjectPreview _preview;
-        private int _grabCount;
         private bool _rigPlaced;
-        private TextMesh _hud;
-        private string _shownStatus;
-
-        private InputAction _rotate;
-        private InputAction _duplicate;
-        private InputAction _delete;
-        private InputAction _undo;
-        private InputAction _redo;
 
         // ---------- запуск ----------
 
@@ -54,17 +43,32 @@ namespace XrInterior.EditorXR
 
             _preview.frameCamera = false;   // камерой управляет XR-риг, а не предпросмотр
             _preview.ObjectViewBuilt += OnObjectViewBuilt;
+            _preview.WallViewBuilt += OnWallViewBuilt;
             _preview.ViewRebuilt += OnViewRebuilt;
             _preview.ProjectReopened += OnProjectReopened;
-            SetupInput();
         }
 
         private void Start()
         {
-            CreateHud();
             // Новые предметы появляются рядом с пользователем: за точку отсчёта берём камеру XR-рига.
             Camera cam = Camera.main != null ? Camera.main : FindFirstObjectByType<Camera>();
             if (cam != null) _preview.spawnAnchor = cam.transform;
+            AllowRaysToHitTriggers();
+        }
+
+        // Стены не твёрдые (коллайдеры-триггеры, игрок проходит сквозь них), но луч должен их «видеть», чтобы выбрать стену.
+        // Свойство называется raycastTriggerInteraction и лежит в разных классах в зависимости от версии XRI, поэтому ищем по имени.
+        private static void AllowRaysToHitTriggers()
+        {
+            foreach (MonoBehaviour behaviour in FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None))
+            {
+                if (behaviour == null) continue;
+                Type type = behaviour.GetType();
+                if (type.Namespace == null || !type.Namespace.StartsWith("UnityEngine.XR.Interaction.Toolkit")) continue;
+                PropertyInfo property = type.GetProperty("raycastTriggerInteraction", BindingFlags.Public | BindingFlags.Instance);
+                if (property != null && property.PropertyType == typeof(QueryTriggerInteraction) && property.CanWrite)
+                    property.SetValue(behaviour, QueryTriggerInteraction.Collide, null);
+            }
         }
 
         private void OnDestroy()
@@ -72,32 +76,108 @@ namespace XrInterior.EditorXR
             if (_preview != null)
             {
                 _preview.ObjectViewBuilt -= OnObjectViewBuilt;
+                _preview.WallViewBuilt -= OnWallViewBuilt;
                 _preview.ViewRebuilt -= OnViewRebuilt;
                 _preview.ProjectReopened -= OnProjectReopened;
             }
-            DisposeAction(_rotate); DisposeAction(_duplicate); DisposeAction(_delete);
-            DisposeAction(_undo); DisposeAction(_redo);
         }
 
-        private void Update()
+        // ---------- хват ----------
+
+        private static XRGrabInteractable MakeGrabbable(GameObject root)
         {
-            if (_preview == null || _preview.Tools == null || _preview.Projects == null
-                || _preview.Projects.Current == null) return;
-
-            // Кнопки контроллеров Touch и дублирующие клавиши 1-6 (для проверки без гарнитуры).
-            Keyboard kb = Keyboard.current;
-            if (_rotate.WasPressedThisFrame() || KeyPressed(kb, 2)) Do(() => RotateSelected(1f));
-            if (KeyPressed(kb, 1)) Do(() => RotateSelected(-1f));
-            if (_duplicate.WasPressedThisFrame() || KeyPressed(kb, 3)) Do(DuplicateSelected);
-            if (_delete.WasPressedThisFrame() || KeyPressed(kb, 4)) Do(DeleteSelected);
-            if (_undo.WasPressedThisFrame() || KeyPressed(kb, 5)) Do(UndoLast);
-            if (_redo.WasPressedThisFrame() || KeyPressed(kb, 6)) Do(RedoLast);
-            if (KeyPressed(kb, 7)) Do(SelectNextObject);
-
-            if (_preview.Status != _shownStatus) UpdateHud();
+            // Хват: двигаем, не вращаем (поворот делается кнопками меню).
+            XRGrabInteractable grab = root.AddComponent<XRGrabInteractable>();
+            Rigidbody body = root.GetComponent<Rigidbody>();
+            if (body != null) { body.isKinematic = true; body.useGravity = false; }
+            grab.movementType = XRBaseInteractable.MovementType.Kinematic;
+            grab.throwOnDetach = false;
+            grab.trackRotation = false;
+            grab.useDynamicAttach = true;
+            return grab;
         }
 
-        // ---------- действия ----------
+        private void OnObjectViewBuilt(GameObject root, PlacedObject o)
+        {
+            string id = o.Id;
+            Transform visual = root.transform;
+            XRGrabInteractable grab = MakeGrabbable(root);
+            grab.selectEntered.AddListener(args => OnGrabbed(id, "Предмет"));
+            grab.selectExited.AddListener(args => OnReleased(id, visual, false));
+        }
+
+        private void OnWallViewBuilt(GameObject root, Wall w)
+        {
+            string id = w.Id;
+
+            // Основную стену комнаты можно только выбрать (и покрасить), добавленную перегородку ещё и переносить.
+            if (WallPlacement.IsRoomBoundaryWall(_preview.Projects.Current, w))
+            {
+                XRSimpleInteractable pick = root.AddComponent<XRSimpleInteractable>();
+                pick.selectEntered.AddListener(args =>
+                {
+                    _preview.Selection.Select(id);
+                    _preview.Status = "Выбрана основная стена.";
+                });
+                return;
+            }
+
+            Transform visual = root.transform;
+            XRGrabInteractable grab = MakeGrabbable(root);
+            grab.selectEntered.AddListener(args => OnGrabbed(id, "Стена"));
+            grab.selectExited.AddListener(args => OnReleased(id, visual, true));
+        }
+
+        private void OnGrabbed(string id, string what)
+        {
+            _preview.RebuildHolds++;   // пока элемент в руке, сцена не перерисовывается
+            _preview.Selection.Select(id);
+            _preview.Status = "Выбрано: " + what + ".";
+        }
+
+        private void OnReleased(string id, Transform visual, bool isWall)
+        {
+            try
+            {
+                Project p = _preview.Projects.Current;
+                if (p == null || visual == null || _preview.Tools == null || _preview.ViewRoot == null) return;
+
+                Vector3 local = _preview.ViewRoot.InverseTransformPoint(visual.position);
+
+                if (isWall)
+                {
+                    Wall wall = p.Walls.Find(x => x.Id == id);
+                    if (wall == null) return;
+                    // Корень стены стоит в её середине на нулевой высоте: считаем, на сколько его сдвинули.
+                    float wx = local.x - (wall.A.X + wall.B.X) / 2f;
+                    float wz = local.z - (wall.A.Z + wall.B.Z) / 2f;
+                    if (wx * wx + wz * wz < 0.02f * 0.02f) { _preview.Status = "Выбрана стена."; return; }
+                    Do(() => Report(_preview.Tools.MoveBy(id, wx, wz)));
+                    return;
+                }
+
+                PlacedObject o = p.Objects.Find(x => x.Id == id);
+                if (o == null) return;
+                float dx = local.x - o.Position.X;
+                float dy = local.y - o.Position.Y;
+                float dz = local.z - o.Position.Z;
+                if (dx * dx + dy * dy + dz * dz < 0.02f * 0.02f)
+                {
+                    // Предмет почти не сдвинули: считаем это просто выбором, в историю ничего не пишем.
+                    _preview.Status = "Выбран: " + NameOf(id) + ".";
+                    return;
+                }
+
+                // Высоту передаём для предметов на стене (картину можно перевесить выше или ниже), остальным она не нужна.
+                float mountHeight = local.y - _preview.RoomElevation;
+                Do(() => Report(_preview.Tools.MoveTo(id, new PlanPoint(local.x, local.z), mountHeight)));
+            }
+            finally
+            {
+                _preview.RebuildHolds = Math.Max(0, _preview.RebuildHolds - 1);
+                _preview.RequestRebuild();   // при отказе элемент вернётся на прежнее место
+            }
+        }
 
         private void Do(Action action)
         {
@@ -115,56 +195,7 @@ namespace XrInterior.EditorXR
 
         private void Report(ToolResult r)
         {
-            _preview.Status = r.Message + (r.Warning != null ? " Предупреждение: " + r.Warning : "");
-        }
-
-        // direction: +1 по часовой, -1 против. Предмет поворачивается на 15°, стена на 90°.
-        private void RotateSelected(float direction)
-        {
-            if (!_preview.Selection.HasSelection) { _preview.Status = "Сначала выберите элемент."; return; }
-            bool isWall = _preview.Selection.KindOf(_preview.Projects.Current) == SelectionKind.Wall;
-            Report(_preview.Tools.RotateBy(_preview.Selection.SelectedId,
-                direction * (isWall ? EditorTools.WallRotationStep : 15f)));
-        }
-
-        private void DeleteSelected()
-        {
-            if (!_preview.Selection.HasSelection) { _preview.Status = "Сначала выберите элемент."; return; }
-            if (_preview.Selection.SelectedPart != null) { _preview.Status = "Пол и потолок удалить нельзя."; return; }
-            Report(_preview.Tools.Delete(_preview.Selection.SelectedId));
-        }
-
-        private void DuplicateSelected()
-        {
-            if (_preview.Selection.KindOf(_preview.Projects.Current) != SelectionKind.Object)
-            { _preview.Status = "Копию можно сделать только у предмета."; return; }
-            ToolResult r = _preview.Tools.Duplicate(_preview.Selection.SelectedId);
-            Report(r);
-            if (r.Success) _preview.Selection.Select(r.ObjectId);
-        }
-
-        private void SelectNextObject()
-        {
-            string id = _preview.Selection.SelectNext(_preview.Projects.Current);
-            _preview.Status = id == null ? "Предметов нет." : "Выбран: " + NameOf(id) + ".";
-        }
-
-        private void UndoLast()
-        {
-            CommandService commands = _preview.Commands;
-            if (!commands.CanUndo) { _preview.Status = "Отменять нечего."; return; }
-            string name = commands.NextUndoName;
-            commands.Undo();
-            _preview.Status = "Отменено: " + name + ".";
-        }
-
-        private void RedoLast()
-        {
-            CommandService commands = _preview.Commands;
-            if (!commands.CanRedo) { _preview.Status = "Повторять нечего."; return; }
-            string name = commands.NextRedoName;
-            commands.Redo();
-            _preview.Status = "Повторено: " + name + ".";
+            _preview.Status = r.Message + (r.Warning != null ? " Красный: " + r.Warning : "");
         }
 
         private string NameOf(string objectId)
@@ -174,80 +205,6 @@ namespace XrInterior.EditorXR
             if (o == null) return "?";
             CatalogItem item = _preview.Catalog != null ? _preview.Catalog.GetItem(o.CatalogId) : null;
             return item != null ? item.Name : o.CatalogId;
-        }
-
-        private static bool KeyPressed(Keyboard kb, int digit)
-        {
-            if (kb == null) return false;
-            switch (digit)
-            {
-                case 1: return kb.digit1Key.wasPressedThisFrame;
-                case 2: return kb.digit2Key.wasPressedThisFrame;
-                case 3: return kb.digit3Key.wasPressedThisFrame;
-                case 4: return kb.digit4Key.wasPressedThisFrame;
-                case 5: return kb.digit5Key.wasPressedThisFrame;
-                case 6: return kb.digit6Key.wasPressedThisFrame;
-                default: return false;
-            }
-        }
-
-        // ---------- хват предмета ----------
-
-        private void OnObjectViewBuilt(GameObject root, PlacedObject o)
-        {
-            string id = o.Id;
-            Transform visual = root.transform;
-
-            // Хват: двигаем, не вращаем (поворот делается кнопкой A или клавишей 1, шаг 15°).
-            XRGrabInteractable grab = root.AddComponent<XRGrabInteractable>();
-            Rigidbody body = root.GetComponent<Rigidbody>();
-            if (body != null) { body.isKinematic = true; body.useGravity = false; }
-            grab.movementType = XRBaseInteractable.MovementType.Kinematic;
-            grab.throwOnDetach = false;
-            grab.trackRotation = false;
-            grab.useDynamicAttach = true;
-
-            grab.selectEntered.AddListener(args => OnGrabbed(id));
-            grab.selectExited.AddListener(args => OnReleased(id, visual));
-        }
-
-        private void OnGrabbed(string objectId)
-        {
-            _grabCount++;
-            _preview.RebuildHolds++;   // пока предмет в руке, сцена не перерисовывается
-            _preview.Selection.Select(objectId);
-            _preview.Status = "Выбран: " + NameOf(objectId) + ".";
-        }
-
-        private void OnReleased(string objectId, Transform visual)
-        {
-            try
-            {
-                Project p = _preview.Projects.Current;
-                PlacedObject o = p == null ? null : p.Objects.Find(x => x.Id == objectId);
-                if (o == null || visual == null || _preview.Tools == null || _preview.ViewRoot == null) return;
-
-                Vector3 local = _preview.ViewRoot.InverseTransformPoint(visual.position);
-                float dx = local.x - o.Position.X;
-                float dy = local.y - o.Position.Y;
-                float dz = local.z - o.Position.Z;
-                if (dx * dx + dy * dy + dz * dz < 0.02f * 0.02f)
-                {
-                    // Предмет почти не сдвинули: считаем это просто выбором, в историю ничего не пишем.
-                    _preview.Status = "Выбран: " + NameOf(objectId) + ".";
-                    return;
-                }
-
-                // Высоту передаём для предметов на стене (картину можно перевесить выше или ниже), остальным она не нужна.
-                float mountHeight = local.y - _preview.RoomElevation;
-                Do(() => Report(_preview.Tools.MoveTo(objectId, new PlanPoint(local.x, local.z), mountHeight)));
-            }
-            finally
-            {
-                _grabCount = Math.Max(0, _grabCount - 1);
-                _preview.RebuildHolds = Math.Max(0, _preview.RebuildHolds - 1);
-                _preview.RequestRebuild();   // при отказе предмет вернётся на прежнее место
-            }
         }
 
         // ---------- XR-риг ----------
@@ -268,9 +225,10 @@ namespace XrInterior.EditorXR
             float minX, maxX, minZ, maxZ;
             if (!_preview.TryGetRoomBounds(out minX, out maxX, out minZ, out maxZ)) return;
 
-            // Встаём в комнате чуть южнее центра, лицом к центру (по оси Z).
-            float z = Mathf.Max(minZ + 0.5f, (minZ + maxZ) / 2f - 1f);
-            Vector3 target = _preview.transform.TransformPoint(new Vector3((minX + maxX) / 2f, _preview.RoomElevation, z));
+            // Встаём в комнате внутри контура, лицом по оси Z.
+            Project p = _preview.Projects.Current;
+            PlanPoint c = PlanGeometry.InteriorPoint(p.Rooms[0].Boundary);
+            Vector3 target = _preview.transform.TransformPoint(new Vector3(c.X, _preview.RoomElevation, c.Z));
 
             // Контроллер персонажа на риге иногда игнорирует прямую смену позиции, поэтому на миг выключаем его.
             CharacterController cc = xrOrigin.GetComponent<CharacterController>();
@@ -281,60 +239,6 @@ namespace XrInterior.EditorXR
             if (wasEnabled) cc.enabled = true;
 
             _rigPlaced = true;
-        }
-
-        // ---------- ввод (кнопки Touch-контроллеров) ----------
-
-        private void SetupInput()
-        {
-            _rotate = Bind("rotate", "<XRController>{RightHand}/{PrimaryButton}");        // A
-            _duplicate = Bind("duplicate", "<XRController>{RightHand}/{SecondaryButton}"); // B
-            _delete = Bind("delete", "<XRController>{RightHand}/{Primary2DAxisClick}");    // нажатие правого стика
-            _undo = Bind("undo", "<XRController>{LeftHand}/{PrimaryButton}");              // X
-            _redo = Bind("redo", "<XRController>{LeftHand}/{Primary2DAxisClick}");         // нажатие левого стика
-        }
-
-        private static InputAction Bind(string name, string path)
-        {
-            var action = new InputAction(name: name, type: InputActionType.Button, binding: path);
-            action.Enable();
-            return action;
-        }
-
-        private static void DisposeAction(InputAction a) { if (a != null) { a.Disable(); a.Dispose(); } }
-
-        // ---------- подсказка перед глазами ----------
-
-        private void CreateHud()
-        {
-            if (_hud != null) return;
-            Camera cam = Camera.main != null ? Camera.main : FindFirstObjectByType<Camera>();
-            Transform parent = cam != null ? cam.transform : transform;
-
-            var go = new GameObject("Подсказка");
-            go.transform.SetParent(parent, false);
-            go.transform.localPosition = new Vector3(0f, -0.30f, 1.0f);
-            go.transform.localScale = Vector3.one * hudScale;
-
-            _hud = go.AddComponent<TextMesh>();
-            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            _hud.font = font;
-            go.GetComponent<MeshRenderer>().sharedMaterial = font.material;
-            _hud.fontSize = 48;
-            _hud.characterSize = 0.1f;
-            _hud.anchor = TextAnchor.MiddleCenter;
-            _hud.alignment = TextAlignment.Center;
-            _hud.color = new Color(1f, 0.92f, 0.3f);
-            UpdateHud();
-        }
-
-        private void UpdateHud()
-        {
-            if (_hud == null || _preview == null) return;
-            _shownStatus = _preview.Status;
-            _hud.text = _shownStatus
-                + "\nA/2: повернуть   1: повернуть назад   B/3: копия   клик правого стика/4: удалить"
-                + "\nX/5: отмена   клик левого стика/6: повтор   7: выбрать следующий предмет";
         }
     }
 }
